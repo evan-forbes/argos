@@ -1871,7 +1871,13 @@ async function startProgressListeners() {
         ? ` (scanned through block ${d.at_block_height.toLocaleString()})`
         : "";
       div.textContent =
-        `Found ${fmt(d.zatoshis)} on account ${d.account_index} — ${d.pool}${heightHint}. Shielded scan still running — Review & Sweep will unlock when complete.`;
+        `Found ${fmt(d.zatoshis)} on account ${d.account_index} — ${d.pool}${heightHint}. `;
+      // Removed by updateScanUI once the scan ends, so a finished scan never
+      // still claims to be running.
+      const pending = document.createElement("span");
+      pending.className = "discovery-pending";
+      pending.textContent = "Shielded scan still running — Review & Sweep will unlock when complete.";
+      div.appendChild(pending);
       const container = $("scan-discoveries");
       container.appendChild(div);
       container.style.display = "";
@@ -1917,47 +1923,80 @@ function cleanupListeners() {
   state.unlistenDiscovered = null;
 }
 
+// What the scan status row shows, as a pure function of the progress payload.
+//
+// The "Connecting…", "0 / 0" and "Calculating…" placeholders are only replaced
+// by a block scan. A transparent-only wallet has no block scan, so it used to
+// finish as "Complete ✓" next to all three, plus an era hint for the chain tip.
+// Once the scan has ended, anything it never reported reads as "—" instead.
+// `server: null` means leave the field as it is.
+function scanStatusFields(progress, etaState, era, primaryEndpoint) {
+  const terminal = ["complete", "cancelled", "error"].includes(progress.phase);
+  const scanned = Number(progress.blocks_scanned);
+  const total = Number(progress.blocks_total);
+
+  let server = null;
+  let serverTitle = "";
+  const endpoint = progress.server?.endpoint;
+  if (endpoint) {
+    const isFallback = endpoint !== primaryEndpoint;
+    server = endpoint + (isFallback ? " (fallback)" : "");
+    if (isFallback) {
+      serverTitle = "Connected to a fallback server — a different operator can see your scan activity";
+    }
+  } else if (terminal) {
+    server = "—";
+  }
+
+  const progressText = total === 0 && terminal
+    ? "—"
+    : `${scanned.toLocaleString()} / ${total.toLocaleString()}`;
+
+  let barPercent = null;
+  if (progress.phase === "complete") {
+    barPercent = 100;
+  } else if (total > 0) {
+    barPercent = Math.min(100, (scanned / total) * 100);
+  }
+
+  let etaText = "";
+  if (!terminal) {
+    if (etaState.kind === "warmup") etaText = "Calculating…";
+    else if (etaState.kind !== "done") etaText = etaState.text;
+    if (era) etaText = etaText ? `${etaText} · scanning ~${era}` : `scanning ~${era}`;
+  }
+
+  return { terminal, server, serverTitle, progressText, barPercent, etaText };
+}
+
 function updateScanUI(progress) {
   state.lastProgress = progress;
 
   $("scan-phase").textContent = phaseLabel(progress.phase);
 
-  if (progress.server?.endpoint) {
-    const primary = $("lightwalletd-url").value.split(",")[0].trim();
-    const isFallback = progress.server.endpoint !== primary;
-    $("scan-server").textContent = progress.server.endpoint + (isFallback ? " (fallback)" : "");
-    $("scan-server").title = isFallback
-      ? "Connected to a fallback server — a different operator can see your scan activity"
-      : "";
-  }
-
   const scanned = Number(progress.blocks_scanned);
   const total = Number(progress.blocks_total);
-  $("scan-progress-text").textContent =
-    `${scanned.toLocaleString()} / ${total.toLocaleString()}`;
-
-  if (total > 0) {
-    $("scan-progress-bar").style.width =
-      `${Math.min(100, (scanned / total) * 100).toFixed(1)}%`;
-  }
-
   eta.observe(scanned, total);
   // eraHint expects an absolute Zcash chain height. blocks_scanned is a
   // delta from effective_birthday — passing it directly mislabels the era
   // for any wallet whose birthday is past Sapling activation. Use
   // synced_to_height (set by the backend) when available.
   const era = progress.synced_to_height ? eraHint(Number(progress.synced_to_height)) : null;
-  const etaState = eta.estimate();
-  let etaText;
-  if (etaState.kind === "warmup") {
-    etaText = "Calculating…";
-  } else if (etaState.kind === "done") {
-    etaText = "";
-  } else {
-    etaText = etaState.text;
+  const primary = $("lightwalletd-url").value.split(",")[0].trim();
+  const fields = scanStatusFields(progress, eta.estimate(), era, primary);
+
+  if (fields.server !== null) {
+    $("scan-server").textContent = fields.server;
+    $("scan-server").title = fields.serverTitle;
   }
-  if (era) etaText = etaText ? `${etaText} · scanning ~${era}` : `scanning ~${era}`;
-  $("scan-eta").textContent = etaText;
+  $("scan-progress-text").textContent = fields.progressText;
+  if (fields.barPercent !== null) {
+    $("scan-progress-bar").style.width = `${fields.barPercent.toFixed(1)}%`;
+  }
+  $("scan-eta").textContent = fields.etaText;
+  if (fields.terminal) {
+    document.querySelectorAll("#scan-discoveries .discovery-pending").forEach((el) => el.remove());
+  }
 
   if (progress.error) {
     setStatus("scan-message", progress.error, "error");
