@@ -1686,6 +1686,57 @@ pub async fn detect_birthday(
     .map_err(|err| err.to_string())
 }
 
+/// The mnemonic a wallet file yielded, or the reason there is none.
+///
+/// Birthday auto-detection probes HD-derived addresses, so a wallet without a
+/// recoverable phrase has nothing to probe. The wording mirrors the CLI's.
+fn mnemonic_of(
+    keys: argos_core::argos_wallet_import::ImportedKeys,
+) -> Result<SecretString, String> {
+    keys.mnemonic.ok_or_else(|| {
+        "Auto-detect probes on-chain history for HD-derived addresses, which a wallet file \
+         without a recoverable seed phrase does not have. Enter a block height or a date instead."
+            .to_owned()
+    })
+}
+
+/// Re-open a wallet file and take its mnemonic, so the phrase stays in the
+/// backend and never crosses IPC to the frontend.
+fn wallet_file_mnemonic(
+    path: &str,
+    passphrase: Option<&SecretString>,
+) -> Result<SecretString, String> {
+    let bytes = argos_core::wallet_file::read_wallet_file(path)
+        .map_err(|err| format!("could not read {path}: {err}"))?;
+    let keys = argos_core::argos_wallet_import::import_wallet_file(&bytes, passphrase)
+        .map_err(|err| err.to_string())?;
+    mnemonic_of(keys)
+}
+
+/// `detect_birthday` for a loaded wallet file, which holds its own mnemonic.
+#[tauri::command]
+pub async fn detect_birthday_from_wallet_file(
+    app: AppHandle,
+    path: String,
+    passphrase: Option<SecretString>,
+    lightwalletd_url: String,
+    network: ZeckNetwork,
+) -> Result<BirthdayDetectResult, String> {
+    ensure_tos_accepted(&app)?;
+    let seed_phrase = wallet_file_mnemonic(&path, passphrase.as_ref())?;
+    let app_clone = app.clone();
+    zeck_detect_birthday(
+        &seed_phrase,
+        network,
+        &lightwalletd_url,
+        move |msg: &str| {
+            let _ = app_clone.emit("birthday-probe-progress", msg.to_owned());
+        },
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 pub async fn save_recovery_report(
     state: State<'_, AppState>,
@@ -2093,6 +2144,36 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 #[cfg(test)]
 mod tests {
     use argos_core::sprout_recovery::{SpentSproutNote, SproutRecovery};
+    use secrecy::ExposeSecret;
+
+    fn fixture(name: &str) -> String {
+        format!(
+            "{}/../../crates/argos-wallet-import/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    /// A zcashd wallet holds flat keys and no BIP-39 phrase, so there is
+    /// nothing for HD birthday detection to probe. Refused locally, before
+    /// any network call, in words that point at the other two routes.
+    #[test]
+    fn seedless_wallet_file_refuses_birthday_detection() {
+        let err = wallet_file_mnemonic(&fixture("modern-plaintext.dat"), None)
+            .expect_err("a zcashd wallet has no mnemonic");
+        assert!(err.contains("seed phrase"), "{err}");
+        assert!(err.contains("height") && err.contains("date"), "{err}");
+    }
+
+    #[test]
+    fn wallet_keys_with_a_mnemonic_yield_it_for_detection() {
+        let keys = argos_core::argos_wallet_import::ImportedKeys {
+            mnemonic: Some(SecretString::from("abandon art".to_owned())),
+            ..Default::default()
+        };
+        let phrase = mnemonic_of(keys).expect("mnemonic present");
+        assert_eq!(phrase.expose_secret(), "abandon art");
+        assert!(mnemonic_of(Default::default()).is_err());
+    }
 
     fn spent_note() -> SpentSproutNote {
         SpentSproutNote {

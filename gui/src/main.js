@@ -1541,12 +1541,29 @@ $("birthday-height").addEventListener("input", () => {
 updateScanEstimate();
 updateBirthdayHint();
 
+// Which seed auto-detect can use. A loaded wallet file wins over the typed
+// box because the scan will use the file's keys; its mnemonic stays in the
+// backend, so the frontend only chooses the command.
+function birthdayAutodetectSource(seedText, wallet) {
+  if (wallet) {
+    if (wallet.summary && wallet.summary.has_mnemonic) return { kind: "wallet" };
+    return {
+      kind: "none",
+      message:
+        "Auto-detect needs a seed phrase, and this wallet file has none. Enter a block height or a date instead.",
+    };
+  }
+  if (String(seedText || "").trim()) return { kind: "seed" };
+  return { kind: "none", message: "Enter your seed phrase on step 2 first." };
+}
+
 $("birthday-autodetect").addEventListener("click", async () => {
-  const seedVal = seedInput.value.trim();
-  if (!seedVal) {
-    setBirthdayHint("Enter your seed phrase on step 2 first.", "error");
+  const source = birthdayAutodetectSource(seedInput.value, walletFile);
+  if (source.kind === "none") {
+    setBirthdayHint(source.message, "error");
     return;
   }
+  const seedVal = seedInput.value.trim();
   $("birthday-autodetect").disabled = true;
   $("birthday-estimate").disabled = true;
   setBirthdayHint("Starting detection…", "");
@@ -1557,11 +1574,18 @@ $("birthday-autodetect").addEventListener("click", async () => {
   });
 
   try {
-    const result = await invoke("detect_birthday", {
-      seed: seedVal.toLowerCase(),
+    const probe = {
       lightwalletdUrl: $("lightwalletd-url").value.trim(),
       network: $("network-select").value,
-    });
+    };
+    const result =
+      source.kind === "wallet"
+        ? await invoke("detect_birthday_from_wallet_file", {
+            ...probe,
+            path: walletFile.path,
+            passphrase: walletFile.passphrase,
+          })
+        : await invoke("detect_birthday", { ...probe, seed: seedVal.toLowerCase() });
     $("birthday-height").value = result.birthday;
     updateScanEstimate();
     const approx = formatApproxMonth(approxDateFromHeight(result.birthday));
