@@ -899,6 +899,7 @@ $("wallet-browse")?.addEventListener("click", async () => {
 });
 
 $("wallet-open")?.addEventListener("click", openWalletFile);
+$("wallet-forget")?.addEventListener("click", forgetLoadedWalletFile);
 $("wallet-path")?.addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); openWalletFile(); }
 });
@@ -1420,11 +1421,7 @@ document.addEventListener("address-match-recovery", async (event) => {
     // A matched capability is the sole recovery source. Clear any inputs left
     // from an earlier wizard visit so secret provenance cannot be ambiguous.
     seedInput.value = "";
-    ++walletOpenGeneration;
-    sproutPreviewWallet = null;
-    walletFile = null;
-    forgetWalletCaveats();
-    $("wallet-passphrase").value = "";
+    forgetLoadedWalletFile();
     $("sapling-scan-keys").value = "";
     $("sapling-key-addresses").replaceChildren();
     $("network-select").value = snapshot.network;
@@ -1665,8 +1662,8 @@ function scanKeySourceConflict(hasSeed, hasWallet, hasSaplingKeys) {
   if (hasSeed && hasWallet) {
     return "A seed phrase and a wallet file cannot be scanned together — \
 they are separate wallets. Run two scans: clear the seed phrase to scan the \
-wallet file, or clear the file path on the wallet screen and press Open wallet \
-file to scan the seed phrase.";
+wallet file, or go back to the wallet screen and press Forget this file to \
+scan the seed phrase.";
   }
   if (hasSeed && hasSaplingKeys) {
     return "A seed phrase and a pasted Sapling spending key cannot be scanned together — \
@@ -2737,6 +2734,8 @@ $("restart-flow").addEventListener("click", () => {
 
   seedInput.value = "";
   forgetLoadedWalletFile();
+  $("sapling-scan-keys").value = "";
+  $("sapling-key-addresses").replaceChildren();
   seedVisibility.checked = false;
   seedInput.classList.add("masked");
   seedNextBtn.disabled = true;
