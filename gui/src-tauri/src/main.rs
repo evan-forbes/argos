@@ -47,6 +47,7 @@ fn main() {
             commands::execute_sweep,
             commands::estimate_birthday_from_date,
             commands::detect_birthday,
+            commands::detect_birthday_from_wallet_file,
             commands::save_recovery_report,
             commands::delete_workspace,
             commands::check_sprout_key,

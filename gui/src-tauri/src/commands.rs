@@ -1058,31 +1058,7 @@ pub async fn execute_sprout_sweep(
     .await
     .map_err(|err| err.to_string())?;
 
-    Ok(SproutSweepReport {
-        sent: outcome
-            .sent
-            .into_iter()
-            .map(|s| SproutSweepResult {
-                txid: s.txid,
-                value_swept: s.value_swept,
-            })
-            .collect(),
-        total_swept: outcome.total_swept,
-        landed_in_unified_sapling: outcome.destination_kind
-            == Some(argos_core::sprout_sweep::DestinationKind::SaplingReceiverOfUnified),
-        skipped: outcome.skipped,
-        rejected: outcome.rejected.iter().map(|r| r.to_string()).collect(),
-        already_held: outcome
-            .already_held
-            .iter()
-            .map(|h| SproutSweepResult {
-                txid: h.txid.clone(),
-                value_swept: h.value_swept,
-            })
-            .collect(),
-        warnings: outcome.warnings,
-        error: outcome.error,
-    })
+    Ok(sweep_report(outcome, None))
 }
 
 /// A Sprout scan's outcome, for the frontend.
@@ -1148,12 +1124,15 @@ fn collect_scan_keys(
 
     for (index, key) in typed.iter().enumerate() {
         let key = key.trim();
-        if key.is_empty() {
+        // Blank lines and `#` comments are annotation, as in the CLI key file
+        // and `keys_from_sapling_strings`. `typed` is the box's raw lines, so
+        // `index` is the line the user sees.
+        if key.is_empty() || key.starts_with('#') {
             continue;
         }
         keys.push(
             argos_core::sprout_key::decode_sprout_spending_key(key, network)
-                .map_err(|err| format!("key {}: {err}", index + 1))?,
+                .map_err(|err| format!("line {}: {err}", index + 1))?,
         );
     }
 
@@ -1372,6 +1351,70 @@ async fn sprout_tip_anchor(
     }
 }
 
+/// The sweep goes through lightwalletd, which `sweep_sprout_notes` probes
+/// only after the catch-up scan. A server address that cannot work is
+/// refused here, before that scan, as the CLI does. Syntax only: an
+/// unreachable or wrong-network server is still caught by that probe.
+fn validate_sweep_endpoint(lightwalletd_url: &str) -> Result<(), String> {
+    argos_core::lightwalletd::validated_lightwalletd_endpoints(lightwalletd_url)
+        .map(|_| ())
+        .map_err(|err| {
+            format!(
+                "the sweep is broadcast through the lightwalletd server, and that address \
+                 cannot work ({err}). Fix it before sweeping."
+            )
+        })
+}
+
+/// What a sweep can be refused for on its own inputs: a destination with no
+/// Sapling receiver, or a server address that cannot work. Neither needs the
+/// keys, so both are checked before the wallet file is decrypted.
+fn validate_sweep_request(
+    destination: &str,
+    network: ZeckNetwork,
+    lightwalletd_url: &str,
+) -> Result<(), String> {
+    argos_core::sprout_sweep::parse_sapling_destination(destination, network)
+        .map_err(|err| err.to_string())?;
+    validate_sweep_endpoint(lightwalletd_url)
+}
+
+/// A sweep's outcome, for the frontend.
+///
+/// `tip_warning` leads the warnings when the catch-up scan before a sweep
+/// could not confirm it reached the chain tip: a user told nothing would
+/// take the result for a confirmed one.
+fn sweep_report(
+    outcome: argos_core::sprout_sweep::SproutSweepOutcome,
+    tip_warning: Option<String>,
+) -> SproutSweepReport {
+    SproutSweepReport {
+        sent: outcome
+            .sent
+            .into_iter()
+            .map(|s| SproutSweepResult {
+                txid: s.txid,
+                value_swept: s.value_swept,
+            })
+            .collect(),
+        total_swept: outcome.total_swept,
+        landed_in_unified_sapling: outcome.destination_kind
+            == Some(argos_core::sprout_sweep::DestinationKind::SaplingReceiverOfUnified),
+        skipped: outcome.skipped,
+        rejected: outcome.rejected.iter().map(|r| r.to_string()).collect(),
+        already_held: outcome
+            .already_held
+            .iter()
+            .map(|h| SproutSweepResult {
+                txid: h.txid.clone(),
+                value_swept: h.value_swept,
+            })
+            .collect(),
+        warnings: tip_warning.into_iter().chain(outcome.warnings).collect(),
+        error: outcome.error,
+    }
+}
+
 /// Sweep the notes a scan found.
 ///
 /// Resuming a saved scan is a short catch-up, not a rescan: it continues from
@@ -1398,12 +1441,11 @@ pub async fn sweep_sprout_from_scan(
     ensure_tos_accepted(&app)?;
     let net = network_from(&network);
     let peers = parse_custom_peers(&peers)?;
+    // Validated before anything else, the wallet file's decryption included:
+    // an address with no Sapling receiver or a server address that cannot
+    // work should fail here, not after the notes are re-derived.
+    validate_sweep_request(&destination, net, &lightwalletd_url)?;
     let decoded = collect_scan_keys(path.as_deref(), passphrase.as_ref(), &keys, net)?;
-
-    // Validated before anything else: an address with no Sapling receiver
-    // should fail here, not after the notes are re-derived.
-    argos_core::sprout_sweep::parse_sapling_destination(&destination, net)
-        .map_err(|err| err.to_string())?;
 
     let p2p: argos_core::p2p::wire::P2pNetwork = net.into();
     // Blank resolves to the app default, as it does for inspection, preview
@@ -1419,7 +1461,7 @@ pub async fn sweep_sprout_from_scan(
         );
     }
 
-    let (tip_anchor, _) = sprout_tip_anchor(net, &lightwalletd_url).await;
+    let (tip_anchor, tip_warning) = sprout_tip_anchor(net, &lightwalletd_url).await;
     let emitter = app.clone();
     let result = argos_core::sprout_scan_run::run_sprout_scan(
         &decoded,
@@ -1469,31 +1511,7 @@ pub async fn sweep_sprout_from_scan(
     .await
     .map_err(|err| err.to_string())?;
 
-    Ok(SproutSweepReport {
-        sent: outcome
-            .sent
-            .into_iter()
-            .map(|s| SproutSweepResult {
-                txid: s.txid,
-                value_swept: s.value_swept,
-            })
-            .collect(),
-        total_swept: outcome.total_swept,
-        landed_in_unified_sapling: outcome.destination_kind
-            == Some(argos_core::sprout_sweep::DestinationKind::SaplingReceiverOfUnified),
-        skipped: outcome.skipped,
-        rejected: outcome.rejected.iter().map(|r| r.to_string()).collect(),
-        already_held: outcome
-            .already_held
-            .iter()
-            .map(|h| SproutSweepResult {
-                txid: h.txid.clone(),
-                value_swept: h.value_swept,
-            })
-            .collect(),
-        warnings: outcome.warnings,
-        error: outcome.error,
-    })
+    Ok(sweep_report(outcome, tip_warning))
 }
 
 /// The wallet summary's NU7 warning: empty unless the file holds Sprout keys.
@@ -1729,6 +1747,57 @@ pub async fn detect_birthday(
 ) -> Result<BirthdayDetectResult, String> {
     ensure_tos_accepted(&app)?;
     let seed_phrase = seed;
+    let app_clone = app.clone();
+    zeck_detect_birthday(
+        &seed_phrase,
+        network,
+        &lightwalletd_url,
+        move |msg: &str| {
+            let _ = app_clone.emit("birthday-probe-progress", msg.to_owned());
+        },
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
+/// The mnemonic a wallet file yielded, or the reason there is none.
+///
+/// Birthday auto-detection probes HD-derived addresses, so a wallet without a
+/// recoverable phrase has nothing to probe. The wording mirrors the CLI's.
+fn mnemonic_of(
+    keys: argos_core::argos_wallet_import::ImportedKeys,
+) -> Result<SecretString, String> {
+    keys.mnemonic.ok_or_else(|| {
+        "Auto-detect probes on-chain history for HD-derived addresses, which a wallet file \
+         without a recoverable seed phrase does not have. Enter a block height or a date instead."
+            .to_owned()
+    })
+}
+
+/// Re-open a wallet file and take its mnemonic, so the phrase stays in the
+/// backend and never crosses IPC to the frontend.
+fn wallet_file_mnemonic(
+    path: &str,
+    passphrase: Option<&SecretString>,
+) -> Result<SecretString, String> {
+    let bytes = argos_core::wallet_file::read_wallet_file(path)
+        .map_err(|err| format!("could not read {path}: {err}"))?;
+    let keys = argos_core::argos_wallet_import::import_wallet_file(&bytes, passphrase)
+        .map_err(|err| err.to_string())?;
+    mnemonic_of(keys)
+}
+
+/// `detect_birthday` for a loaded wallet file, which holds its own mnemonic.
+#[tauri::command]
+pub async fn detect_birthday_from_wallet_file(
+    app: AppHandle,
+    path: String,
+    passphrase: Option<SecretString>,
+    lightwalletd_url: String,
+    network: ZeckNetwork,
+) -> Result<BirthdayDetectResult, String> {
+    ensure_tos_accepted(&app)?;
+    let seed_phrase = wallet_file_mnemonic(&path, passphrase.as_ref())?;
     let app_clone = app.clone();
     zeck_detect_birthday(
         &seed_phrase,
@@ -2148,7 +2217,7 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{refuse_unreachable_sweep_destination, sprout_nu7_warning, summary_nu7_warning};
+    use super::{sprout_nu7_warning, summary_nu7_warning};
 
     /// PR #263 review item 4: the wallet summary carries the NU7 warning
     /// only when the file holds Sprout keys, and for the network asked for.
@@ -2180,8 +2249,115 @@ mod tests {
         let start = sprout_nu7_warning("mainnet".into(), false);
         assert!(start.contains("Start recovery promptly"), "{start}");
     }
+
+    #[test]
+    fn scan_keys_skip_comments_and_blank_lines() {
+        let typed = vec![
+            "# note".to_string(),
+            String::new(),
+            "  # indented".to_string(),
+        ];
+        // Comments are skipped rather than decoded, so what remains is the
+        // "nothing to scan" refusal, not a bad-key error on line 1.
+        let err = super::collect_scan_keys(None, None, &typed, argos_core::ZeckNetwork::Mainnet)
+            .unwrap_err();
+        assert!(err.starts_with("no Sprout spending keys"), "{err}");
+    }
+
+    #[test]
+    fn scan_key_error_names_the_visible_line() {
+        let typed = vec!["# note".to_string(), String::new(), "not-a-key".to_string()];
+        let err = super::collect_scan_keys(None, None, &typed, argos_core::ZeckNetwork::Mainnet)
+            .unwrap_err();
+        assert!(err.starts_with("line 3:"), "{err}");
+    }
+
+    use super::{
+        refuse_unreachable_sweep_destination, sweep_report, validate_sweep_endpoint,
+        validate_sweep_request,
+    };
     use argos_core::argos_wallet_import::{keys::TransparentKey, ImportedKeys, Provenance};
     use argos_core::sprout_recovery::{SpentSproutNote, SproutRecovery};
+    use secrecy::ExposeSecret;
+
+    fn fixture(name: &str) -> String {
+        format!(
+            "{}/../../crates/argos-wallet-import/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    /// A zcashd wallet holds flat keys and no BIP-39 phrase, so there is
+    /// nothing for HD birthday detection to probe. Refused locally, before
+    /// any network call, in words that point at the other two routes.
+    #[test]
+    fn seedless_wallet_file_refuses_birthday_detection() {
+        let err = wallet_file_mnemonic(&fixture("modern-plaintext.dat"), None)
+            .expect_err("a zcashd wallet has no mnemonic");
+        assert!(err.contains("seed phrase"), "{err}");
+        assert!(err.contains("height") && err.contains("date"), "{err}");
+    }
+
+    /// Hand-built ZecWallet Lite v25 file with an encrypted seed. The seed
+    /// ciphertext is `encrypt_test_seed` from `argos-wallet-import`'s own
+    /// tests (XSalsa20-Poly1305, unsalted double-SHA-256 key) for entropy
+    /// `[0x11; 32]`, passphrase "some passphrase", nonce `[0x99; 24]`.
+    fn encrypted_zwl_bytes() -> Vec<u8> {
+        const ENC_SEED: &str = "01e1e103955249869a29a92fd73be26b58cbc0a722a5fb6d8124f72219bf9f2476f4776dac43f6828d54a4885bf435dc";
+        let mut bytes = 25u64.to_le_bytes().to_vec(); // external version
+        bytes.extend_from_slice(&21u64.to_le_bytes()); // keys version
+        bytes.push(1); // encrypted
+        bytes.extend(
+            (0..ENC_SEED.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&ENC_SEED[i..i + 2], 16).expect("hex")),
+        );
+        bytes.push(24); // nonce length (CompactSize)
+        bytes.extend_from_slice(&[0x99; 24]);
+        bytes.extend_from_slice(&[0u8; 32]); // plaintext seed slot, unused when encrypted
+        bytes.extend_from_slice(&[0, 0]); // no zkeys, no tkeys
+        bytes
+    }
+
+    /// The positive path through a real file on disk: the backend re-opens
+    /// the file, decrypts the seed and hands back the mnemonic, so it never
+    /// has to cross IPC.
+    #[test]
+    fn an_encrypted_zwl_file_yields_its_mnemonic_for_detection() {
+        let dir = std::env::temp_dir().join(format!("argos-birthday-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("zwl.dat");
+        std::fs::write(&path, encrypted_zwl_bytes()).expect("write fixture");
+        let path_str = path.to_str().expect("utf-8 path").to_owned();
+
+        let pass = SecretString::from("some passphrase".to_owned());
+        let phrase = wallet_file_mnemonic(&path_str, Some(&pass)).expect("decrypts");
+        // BIP-39 of entropy [0x11; 32].
+        assert_eq!(
+            phrase.expose_secret(),
+            "baby mass dust captain baby mass dust captain baby mass dust captain \
+             baby mass dust captain baby mass dust captain baby mass dust cake"
+        );
+
+        let err = wallet_file_mnemonic(&path_str, None).expect_err("needs the passphrase");
+        assert!(!err.contains(phrase.expose_secret().as_str()), "{err}");
+        let wrong = SecretString::from("wrong".to_owned());
+        wallet_file_mnemonic(&path_str, Some(&wrong)).expect_err("wrong passphrase");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wallet_keys_with_a_mnemonic_yield_it_for_detection() {
+        let keys = argos_core::argos_wallet_import::ImportedKeys {
+            mnemonic: Some(SecretString::from("abandon art".to_owned())),
+            ..Default::default()
+        };
+        let phrase = mnemonic_of(keys).expect("mnemonic present");
+        assert_eq!(phrase.expose_secret(), "abandon art");
+        assert!(mnemonic_of(Default::default()).is_err());
+    }
+
     use argos_core::ZeckNetwork;
 
     // Orchard-only and Orchard+Sapling mainnet unified addresses. The first
@@ -2239,6 +2415,60 @@ mod tests {
         seeded.mnemonic = Some(secrecy::SecretString::new("abandon".to_owned()));
         refuse_unreachable_sweep_destination(&seeded, ORCHARD_ONLY_UA, ZeckNetwork::Mainnet)
             .expect("seeded wallets sweep through the HD path");
+    }
+
+    #[test]
+    fn sweep_refuses_an_unusable_lightwalletd_url_up_front() {
+        for bad in ["nonono", "", "http://wallet.example:9067"] {
+            let err = validate_sweep_endpoint(bad).expect_err(bad);
+            assert!(err.contains("lightwalletd"), "{bad}: {err}");
+        }
+        validate_sweep_endpoint("https://zec.rocks:443").expect("a real endpoint passes");
+    }
+
+    #[test]
+    fn the_tip_warning_leads_the_sweep_report() {
+        let outcome = argos_core::sprout_sweep::SproutSweepOutcome {
+            warnings: vec!["journal".to_owned()],
+            ..Default::default()
+        };
+        let report = sweep_report(outcome.clone(), Some("tip unconfirmed".to_owned()));
+        assert_eq!(report.warnings, vec!["tip unconfirmed", "journal"]);
+
+        // A tip the catch-up scan did confirm adds nothing.
+        assert_eq!(sweep_report(outcome, None).warnings, vec!["journal"]);
+    }
+
+    #[test]
+    fn a_sweep_request_is_refused_on_its_own_inputs() {
+        // Checked before the wallet file is decrypted: neither check needs
+        // the keys, so a bad address or server is reported without them.
+        let err = validate_sweep_request("not-an-address", ZeckNetwork::Mainnet, "nonono")
+            .expect_err("an undecodable destination is refused");
+        assert!(
+            !err.contains("lightwalletd"),
+            "destination is checked first: {err}"
+        );
+
+        // The test seed's account-0 Sapling address (see derivation.rs).
+        let good = "zs16uhd4mux24se6wkm74vld0ec63d4dxt3d7m80l5xytreplkkllrrf9c7fj859mhp8tkcq9hxfvj";
+        let err = validate_sweep_request(good, ZeckNetwork::Mainnet, "nonono")
+            .expect_err("an unusable server is refused");
+        assert!(err.contains("lightwalletd"), "{err}");
+
+        validate_sweep_request(good, ZeckNetwork::Mainnet, "https://zec.rocks:443")
+            .expect("a real address and server pass");
+    }
+
+    #[test]
+    fn a_wrong_network_server_is_left_to_the_sweeps_own_probe() {
+        // The up-front check is syntax only: no network access, so it cannot
+        // tell a testnet server from a mainnet one. That is caught by the
+        // probe `sweep_sprout_notes` runs before loading the proving
+        // parameters (`validate_lightwalletd_network`, tested in core as
+        // `network_validation_rejects_wrong_chain`).
+        validate_sweep_endpoint("https://testnet.zec.rocks:443")
+            .expect("a well-formed testnet URL passes the syntax check");
     }
 
     fn spent_note() -> SpentSproutNote {
