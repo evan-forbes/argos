@@ -144,6 +144,7 @@
             <div class="guide-section">
               <h3>Step 2 — Seed Entry</h3>
               <p>Paste your full seed phrase (separated by spaces). Click <em>Validate seed</em> or press Enter — Argos checks the BIP-39 checksum locally. The phrase is blurred by default; toggle <em>Show words on screen</em> if you need to proofread it. Your seed is never transmitted anywhere.</p>
+              <p>ZecWallet Lite phrases are 24 words. A 12-, 15-, 18- or 21-word phrase comes from another wallet: Argos checks the standard paths, ZIP 32 shielded accounts and BIP-44 account 0 transparent receive addresses (<code>m/44'/133'/0'/0/0</code> through <code>…/999</code>). Change addresses (<code>…/1/i</code>) and other indexes can be added under <em>Advanced: change the transparent address range</em> on the configuration screen. Funds a wallet kept at other paths will not be found.</p>
             </div>
 
             <div class="guide-section">
@@ -304,6 +305,7 @@
 
           <div class="inline-actions">
             <button class="ghost" id="wallet-open">Open wallet file</button>
+            <button class="ghost" id="wallet-forget" type="button">Forget this file</button>
           </div>
           <p id="wallet-status" class="status-line"></p>
 
@@ -329,6 +331,7 @@
             <h3>What Argos found</h3>
             <ul id="wallet-summary-list" class="session-list"></ul>
             <div id="wallet-sprout-warning" class="guide-warning" hidden>
+              <p id="wallet-sprout-nu7-warning" role="alert" hidden></p>
               <strong id="wallet-sprout-headline"></strong>
               <span id="wallet-sprout-detail"></span>
               <div id="wallet-sprout-accounting" hidden></div>
@@ -610,10 +613,15 @@
         <section class="screen" data-step="scan">
           <p class="eyebrow">Step 4</p>
           <h2>Recovery scan</h2>
-          <div class="banner warning" id="scan-warning">
+          <div class="banner warning" id="scan-warning-shielded">
             Transparent funds are detected within seconds. Argos must still finish the full
             shielded block sync before sweeping — <strong>Review &amp; Sweep unlocks when the
             phase reads "Complete".</strong>
+          </div>
+          <div class="banner info" id="scan-warning-transparent-only" hidden>
+            This wallet holds only transparent keys, so there is no shielded block sync. Argos
+            asks the server for its funds directly, which takes seconds —
+            <strong>Review &amp; Sweep unlocks when the phase reads "Complete".</strong>
           </div>
           <div class="banner info" id="scan-resume-info">
             <strong>Safe to interrupt.</strong> Progress is saved automatically — quit Argos or

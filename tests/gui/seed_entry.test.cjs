@@ -26,5 +26,7 @@ test("a valid shorter seed warns that it did not come from ZecWallet Lite", () =
     assert.match(message, new RegExp(`${count}-word`), `${count}`);
     assert.match(message, /ZecWallet Lite/, `${count}`);
     assert.match(message, /different derivation/, `${count}`);
+    assert.match(message, /ZIP 32/, `${count}`);
+    assert.match(message, /m\/44'\/133'\/0'\/0\/0–999/, `${count}`);
   }
 });
