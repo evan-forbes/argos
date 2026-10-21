@@ -312,6 +312,19 @@ seedVisibility.addEventListener("change", () => {
   seedInput.classList.toggle("masked", !seedVisibility.checked);
 });
 
+// Which scan-screen banner applies. Only a wallet file whose keys are all
+// transparent skips the block sync: pasted Sapling keys move the scan onto
+// the imported-account route, and matched-address recovery ignores the file.
+function scanWarningVariant(walletFile, typedSaplingKeyCount, matchedRecovery) {
+  if (matchedRecovery || typedSaplingKeyCount > 0) return "shielded";
+  return walletFile?.summary?.transparent_only === true ? "transparent-only" : "shielded";
+}
+
+function showScanWarning(variant) {
+  $("scan-warning-shielded").hidden = variant !== "shielded";
+  $("scan-warning-transparent-only").hidden = variant !== "transparent-only";
+}
+
 async function validateSeed() {
   const words = seedInput.value.trim().toLowerCase().split(/\s+/);
   setStatus("seed-status", "Validating…", "");
@@ -1747,6 +1760,9 @@ phrase, or clear the seed phrase to scan the pasted key.",
     // number the lines the user sees. Empty when the box holds nothing but
     // comments, so a wallet-file-only scan is not handed a key set to reject.
     const typedSaplingKeys = hasTypedSaplingKeys ? saplingScanKeyLines() : [];
+    showScanWarning(
+      scanWarningVariant(walletFile, typedSaplingKeys.length, !!state.matchedRecovery),
+    );
     if (state.matchedRecovery) {
       const matched = state.matchedRecovery;
       const matchedConfig = configForMatchedRecovery(config);
@@ -3101,6 +3117,8 @@ $("resume-confirm").addEventListener("click", async () => {
   $("resume-confirm").disabled = true;
   setStatus("resume-modal-status", "Verifying seed and resuming…", "");
   try {
+    // Resume is seed-only, so it always runs the shielded block sync.
+    showScanWarning("shielded");
     const handle = await invoke("resume_session", {
       input: {
         workspace_path: pendingResumeRow.workspace_path,
