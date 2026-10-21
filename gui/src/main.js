@@ -312,13 +312,24 @@ seedVisibility.addEventListener("change", () => {
   seedInput.classList.toggle("masked", !seedVisibility.checked);
 });
 
+// ZecWallet Lite only generated 24-word phrases, so a shorter one came from
+// another wallet. Argos scans it with the ZecWallet Lite layout, which finds
+// nothing if that wallet derived its keys differently.
+function seedValidMessage(wordCount) {
+  const valid = "✓ Seed phrase is valid.";
+  if (wordCount === 24) return valid;
+  return `${valid} ZecWallet Lite only made 24-word phrases, so this ${wordCount}-word ` +
+    "phrase is from another wallet. If that wallet used a different derivation path, " +
+    "the scan will find no funds.";
+}
+
 async function validateSeed() {
   const words = seedInput.value.trim().toLowerCase().split(/\s+/);
   setStatus("seed-status", "Validating…", "");
   seedNextBtn.disabled = true;
   try {
     await invoke("validate_seed", { words });
-    setStatus("seed-status", "✓ Seed phrase is valid.", "success");
+    setStatus("seed-status", seedValidMessage(words.length), "success");
     seedNextBtn.disabled = false;
   } catch (err) {
     setStatus("seed-status", `✗ ${err}`, "error");
