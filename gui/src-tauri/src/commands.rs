@@ -1730,6 +1730,57 @@ pub async fn detect_birthday(
     .map_err(|err| err.to_string())
 }
 
+/// The mnemonic a wallet file yielded, or the reason there is none.
+///
+/// Birthday auto-detection probes HD-derived addresses, so a wallet without a
+/// recoverable phrase has nothing to probe. The wording mirrors the CLI's.
+fn mnemonic_of(
+    keys: argos_core::argos_wallet_import::ImportedKeys,
+) -> Result<SecretString, String> {
+    keys.mnemonic.ok_or_else(|| {
+        "Auto-detect probes on-chain history for HD-derived addresses, which a wallet file \
+         without a recoverable seed phrase does not have. Enter a block height or a date instead."
+            .to_owned()
+    })
+}
+
+/// Re-open a wallet file and take its mnemonic, so the phrase stays in the
+/// backend and never crosses IPC to the frontend.
+fn wallet_file_mnemonic(
+    path: &str,
+    passphrase: Option<&SecretString>,
+) -> Result<SecretString, String> {
+    let bytes = argos_core::wallet_file::read_wallet_file(path)
+        .map_err(|err| format!("could not read {path}: {err}"))?;
+    let keys = argos_core::argos_wallet_import::import_wallet_file(&bytes, passphrase)
+        .map_err(|err| err.to_string())?;
+    mnemonic_of(keys)
+}
+
+/// `detect_birthday` for a loaded wallet file, which holds its own mnemonic.
+#[tauri::command]
+pub async fn detect_birthday_from_wallet_file(
+    app: AppHandle,
+    path: String,
+    passphrase: Option<SecretString>,
+    lightwalletd_url: String,
+    network: ZeckNetwork,
+) -> Result<BirthdayDetectResult, String> {
+    ensure_tos_accepted(&app)?;
+    let seed_phrase = wallet_file_mnemonic(&path, passphrase.as_ref())?;
+    let app_clone = app.clone();
+    zeck_detect_birthday(
+        &seed_phrase,
+        network,
+        &lightwalletd_url,
+        move |msg: &str| {
+            let _ = app_clone.emit("birthday-probe-progress", msg.to_owned());
+        },
+    )
+    .await
+    .map_err(|err| err.to_string())
+}
+
 #[tauri::command]
 pub async fn save_recovery_report(
     state: State<'_, AppState>,
@@ -2142,6 +2193,86 @@ mod tests {
     };
     use argos_core::argos_wallet_import::{keys::TransparentKey, ImportedKeys, Provenance};
     use argos_core::sprout_recovery::{SpentSproutNote, SproutRecovery};
+    use secrecy::ExposeSecret;
+
+    fn fixture(name: &str) -> String {
+        format!(
+            "{}/../../crates/argos-wallet-import/tests/fixtures/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        )
+    }
+
+    /// A zcashd wallet holds flat keys and no BIP-39 phrase, so there is
+    /// nothing for HD birthday detection to probe. Refused locally, before
+    /// any network call, in words that point at the other two routes.
+    #[test]
+    fn seedless_wallet_file_refuses_birthday_detection() {
+        let err = wallet_file_mnemonic(&fixture("modern-plaintext.dat"), None)
+            .expect_err("a zcashd wallet has no mnemonic");
+        assert!(err.contains("seed phrase"), "{err}");
+        assert!(err.contains("height") && err.contains("date"), "{err}");
+    }
+
+    /// Hand-built ZecWallet Lite v25 file with an encrypted seed. The seed
+    /// ciphertext is `encrypt_test_seed` from `argos-wallet-import`'s own
+    /// tests (XSalsa20-Poly1305, unsalted double-SHA-256 key) for entropy
+    /// `[0x11; 32]`, passphrase "some passphrase", nonce `[0x99; 24]`.
+    fn encrypted_zwl_bytes() -> Vec<u8> {
+        const ENC_SEED: &str = "01e1e103955249869a29a92fd73be26b58cbc0a722a5fb6d8124f72219bf9f2476f4776dac43f6828d54a4885bf435dc";
+        let mut bytes = 25u64.to_le_bytes().to_vec(); // external version
+        bytes.extend_from_slice(&21u64.to_le_bytes()); // keys version
+        bytes.push(1); // encrypted
+        bytes.extend(
+            (0..ENC_SEED.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&ENC_SEED[i..i + 2], 16).expect("hex")),
+        );
+        bytes.push(24); // nonce length (CompactSize)
+        bytes.extend_from_slice(&[0x99; 24]);
+        bytes.extend_from_slice(&[0u8; 32]); // plaintext seed slot, unused when encrypted
+        bytes.extend_from_slice(&[0, 0]); // no zkeys, no tkeys
+        bytes
+    }
+
+    /// The positive path through a real file on disk: the backend re-opens
+    /// the file, decrypts the seed and hands back the mnemonic, so it never
+    /// has to cross IPC.
+    #[test]
+    fn an_encrypted_zwl_file_yields_its_mnemonic_for_detection() {
+        let dir = std::env::temp_dir().join(format!("argos-birthday-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("zwl.dat");
+        std::fs::write(&path, encrypted_zwl_bytes()).expect("write fixture");
+        let path_str = path.to_str().expect("utf-8 path").to_owned();
+
+        let pass = SecretString::from("some passphrase".to_owned());
+        let phrase = wallet_file_mnemonic(&path_str, Some(&pass)).expect("decrypts");
+        // BIP-39 of entropy [0x11; 32].
+        assert_eq!(
+            phrase.expose_secret(),
+            "baby mass dust captain baby mass dust captain baby mass dust captain \
+             baby mass dust captain baby mass dust captain baby mass dust cake"
+        );
+
+        let err = wallet_file_mnemonic(&path_str, None).expect_err("needs the passphrase");
+        assert!(!err.contains(phrase.expose_secret().as_str()), "{err}");
+        let wrong = SecretString::from("wrong".to_owned());
+        wallet_file_mnemonic(&path_str, Some(&wrong)).expect_err("wrong passphrase");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn wallet_keys_with_a_mnemonic_yield_it_for_detection() {
+        let keys = argos_core::argos_wallet_import::ImportedKeys {
+            mnemonic: Some(SecretString::from("abandon art".to_owned())),
+            ..Default::default()
+        };
+        let phrase = mnemonic_of(keys).expect("mnemonic present");
+        assert_eq!(phrase.expose_secret(), "abandon art");
+        assert!(mnemonic_of(Default::default()).is_err());
+    }
+
     use argos_core::ZeckNetwork;
 
     // Orchard-only and Orchard+Sapling mainnet unified addresses. The first
