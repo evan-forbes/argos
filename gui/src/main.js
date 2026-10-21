@@ -1543,34 +1543,46 @@ updateBirthdayHint();
 
 // Which seed auto-detect can use. A loaded wallet file wins over the typed
 // box because the scan will use the file's keys; its mnemonic stays in the
-// backend, so the frontend only chooses the command.
+// backend, so the frontend only chooses the command. Whether the file holds a
+// mnemonic at all is the backend's call (`mnemonic_of`), so its refusal is
+// shown as returned rather than restated here where it could drift.
 function birthdayAutodetectSource(seedText, wallet) {
   if (wallet) {
-    if (wallet.summary && wallet.summary.has_mnemonic) return { kind: "wallet" };
-    return {
-      kind: "none",
-      message:
-        "Auto-detect needs a seed phrase, and this wallet file has none. Enter a block height or a date instead.",
-    };
+    // The passphrase is dropped once a scan starts (T-S2), so after
+    // back-to-config the backend could not reopen an encrypted file.
+    if (wallet.passphraseCleared && wallet.passphrase == null) {
+      return {
+        kind: "none",
+        message:
+          "This wallet file is encrypted and its passphrase was cleared when the scan started. Re-enter the passphrase on the wallet screen, then try Auto-detect again.",
+      };
+    }
+    return { kind: "wallet" };
   }
   if (String(seedText || "").trim()) return { kind: "seed" };
   return { kind: "none", message: "Enter your seed phrase on step 2 first." };
 }
 
-$("birthday-autodetect").addEventListener("click", async () => {
+async function runBirthdayAutodetect() {
   const source = birthdayAutodetectSource(seedInput.value, walletFile);
   if (source.kind === "none") {
     setBirthdayHint(source.message, "error");
     return;
   }
   const seedVal = seedInput.value.trim();
+  // Phase-2 detection can run for minutes. If the user opens another wallet
+  // or edits the seed meanwhile, the result belongs to the old source.
+  const generation = walletOpenGeneration;
+  const isCurrent = () =>
+    generation === walletOpenGeneration &&
+    (source.kind === "wallet" || seedInput.value.trim() === seedVal);
   $("birthday-autodetect").disabled = true;
   $("birthday-estimate").disabled = true;
   setBirthdayHint("Starting detection…", "");
   setStatus("config-status", "", "");
 
   const unlistenProbe = await listen("birthday-probe-progress", (event) => {
-    setBirthdayHint(event.payload, "");
+    if (isCurrent()) setBirthdayHint(event.payload, "");
   });
 
   try {
@@ -1586,6 +1598,10 @@ $("birthday-autodetect").addEventListener("click", async () => {
             passphrase: walletFile.passphrase,
           })
         : await invoke("detect_birthday", { ...probe, seed: seedVal.toLowerCase() });
+    if (!isCurrent()) {
+      setBirthdayHint("Auto-detect result discarded: the wallet or seed changed while it ran.", "");
+      return;
+    }
     $("birthday-height").value = result.birthday;
     updateScanEstimate();
     const approx = formatApproxMonth(approxDateFromHeight(result.birthday));
@@ -1594,13 +1610,15 @@ $("birthday-autodetect").addEventListener("click", async () => {
       "success",
     );
   } catch (err) {
-    setBirthdayHint(`✗ Auto-detect failed: ${err}`, "error");
+    if (isCurrent()) setBirthdayHint(`✗ Auto-detect failed: ${err}`, "error");
   } finally {
     $("birthday-autodetect").disabled = false;
     $("birthday-estimate").disabled = false;
     unlistenProbe();
   }
-});
+}
+
+$("birthday-autodetect").addEventListener("click", runBirthdayAutodetect);
 
 $("birthday-estimate").addEventListener("click", async () => {
   const dateVal = $("birthday-date").value;
@@ -1815,7 +1833,10 @@ phrase, or clear the seed phrase to scan the pasted key.",
     // keys (threat model T-S2). Only on success: the passphrase field lives
     // on the wallet screen, so clearing it after a failure would strand a
     // user who retries from the config screen with no way to re-enter it.
-    if (walletFile) walletFile.passphrase = null;
+    if (walletFile) {
+      if (walletFile.passphrase != null) walletFile.passphraseCleared = true;
+      walletFile.passphrase = null;
+    }
     const passphraseInput = $("wallet-passphrase");
     if (passphraseInput) passphraseInput.value = "";
     // The backend holds the decoded keys now; a spending key must not sit
