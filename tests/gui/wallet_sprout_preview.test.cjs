@@ -787,3 +787,68 @@ test("a scan sweep that broadcast switches the NU7 warning to confirming it is m
   assert.match(h.$("complete-sprout-uncovered").textContent, /confirm it is mined/);
   assert.doesNotMatch(h.$("complete-sprout-uncovered").textContent, /Start recovery promptly/);
 });
+
+// Pasted Sprout keys. The scan panel sits inside #wallet-sprout-warning,
+// whose first child is the NU7 alert, so whenever the panel can be used the
+// alert is on screen directly above it, built from the same core text. These
+// tests pin that for pasted keys, across a network change and a broadcast,
+// and pin that the panel cannot be reached without it.
+function keysOnlyHarness() {
+  const noNotes = inspected({ sprout_spendable_notes: 0, sprout_spendable_zatoshis: 0 });
+  return harness(async (command, args, fallback) => {
+    if (command === "sweep_sprout_from_scan") {
+      return { sent: [{ value_swept: 5, txid: "aa" }], total_swept: 5, skipped: [], rejected: [], error: null };
+    }
+    return noNotes(command, args, fallback);
+  });
+}
+
+test("pasted Sprout keys in the scan panel sit under the NU7 deadline, for the selected network", async () => {
+  const h = keysOnlyHarness();
+  await h.open("/fixture/keys-only.dat");
+  await flush();
+  h.$("sprout-scan-keys").value = "# pasted\nSKfixture";
+  assert.equal(h.$("sprout-scan-panel").hidden, false);
+  // The panel's container, and the alert that is its first child.
+  assert.equal(h.$("wallet-sprout-warning").hidden, false);
+  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, false);
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /NU7/);
+
+  h.$("network-select").value = "testnet";
+  await h.peek("refreshSproutNu7Warning()");
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /Testnet NU7: .*4,465,026/);
+});
+
+test("a scan sweep of pasted keys switches the NU7 deadline to the broadcast wording", async () => {
+  const h = keysOnlyHarness();
+  await h.open("/fixture/keys-only.dat");
+  await flush();
+  h.$("sprout-scan-keys").value = "SKfixture";
+  h.$("network-select").value = "testnet";
+  await h.peek("refreshSproutNu7Warning()");
+  h.$("sprout-scan-destination").value = "fixture-destination";
+  h.$("sprout-scan-confirm").checked = true;
+  await h.scanSweep();
+  await flush();
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /^testnet NU7: .*confirm it is mined/);
+});
+
+test("the Sprout scan panel is only reachable beneath the NU7 alert", async () => {
+  const html = fs.readFileSync("gui/src/index.html", "utf8");
+  const container = html.indexOf('id="wallet-sprout-warning"');
+  const alert = html.indexOf('id="wallet-sprout-nu7-warning"');
+  const panel = html.indexOf('id="sprout-scan-panel"');
+  // If the panel is ever moved out of this container, so that pasted keys can
+  // be scanned with no wallet open, it needs a NU7 warning of its own.
+  assert.ok(container > 0 && container < alert && alert < panel);
+  const between = html.slice(container, panel);
+  const opened = (between.match(/<div\b/g) || []).length;
+  const closed = (between.match(/<\/div>/g) || []).length;
+  assert.ok(opened - closed >= 1, "sprout-scan-panel must stay inside wallet-sprout-warning");
+
+  const h = keysOnlyHarness();
+  await h.open("/fixture/keys-only.dat");
+  await flush();
+  h.peek("forgetLoadedWalletFile()");
+  assert.equal(h.$("wallet-summary").hidden, true);
+});
