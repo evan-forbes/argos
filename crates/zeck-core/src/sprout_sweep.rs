@@ -57,8 +57,12 @@ pub const SPROUT_SWEEP_FEE: u64 = ACTIONS_PER_SWEEP * ZAT_PER_ACTION;
 /// the height is proposed in zcash/zips#1405 and is not yet in ZIP 259.
 /// Do not state a height here until that PR merges.
 const MAINNET_NU7_SCHEDULE: &str = "Mainnet activation is targeted for about November 5, \
-     2026; the final height is not yet assigned (proposed in zcash/zips#1405). Timeline: \
-     https://forum.zcashcommunity.com/t/nu7-timeline/57655";
+     2026; the final height is not yet assigned (proposed in zcash/zips#1405).";
+
+/// Kept last in a message, with no punctuation after it, so a copied link
+/// does not pick up a trailing full stop.
+const MAINNET_NU7_TIMELINE: &str =
+    "NU7 timeline: https://forum.zcashcommunity.com/t/nu7-timeline/57655";
 
 const TESTNET_NU7_SCHEDULE: &str = "The testnet NU7 activation height is 4,465,026.";
 
@@ -71,11 +75,11 @@ pub fn nu7_recovery_warning(network: crate::ZeckNetwork) -> String {
                  under NU7 rules.";
     match network {
         crate::ZeckNetwork::Mainnet => format!(
-            "URGENT: {rules} {MAINNET_NU7_SCHEDULE}. Start recovery promptly: recovery \
+            "URGENT: {rules} {MAINNET_NU7_SCHEDULE} Start recovery promptly: recovery \
              transactions must be mined before activation; broadcast alone is not enough. \
              Full-block scans and proving can take substantial time. Check \
-             https://zips.z.cash/zip-0259 for the current mainnet activation height and \
-             upgrade status."
+             https://zips.z.cash/zip-0259 for the assigned mainnet activation height and \
+             upgrade status. {MAINNET_NU7_TIMELINE}"
         ),
         crate::ZeckNetwork::Testnet => format!(
             "{rules} {TESTNET_NU7_SCHEDULE} At or after this height you cannot spend \
@@ -91,8 +95,8 @@ pub fn nu7_recovery_warning(network: crate::ZeckNetwork) -> String {
 /// is a broadcast transaction that is not mined before activation.
 pub fn nu7_broadcast_warning(network: crate::ZeckNetwork) -> String {
     let schedule = match network {
-        crate::ZeckNetwork::Mainnet => MAINNET_NU7_SCHEDULE,
-        crate::ZeckNetwork::Testnet => TESTNET_NU7_SCHEDULE,
+        crate::ZeckNetwork::Mainnet => format!("{MAINNET_NU7_SCHEDULE} {MAINNET_NU7_TIMELINE}"),
+        crate::ZeckNetwork::Testnet => TESTNET_NU7_SCHEDULE.to_owned(),
     };
     format!(
         "Your Sprout recovery transaction was broadcast, but it must be mined before NU7 \
@@ -1233,6 +1237,9 @@ mod tests {
         assert!(text.contains("https://zips.z.cash/zip-0259"), "{text}");
         // No height may be stated as fact until zcash/zips#1405 merges.
         assert!(!text.contains("3,543,405") && !text.contains("3543405"));
+        // A copied link must not pick up trailing punctuation.
+        assert!(text.ends_with("/t/nu7-timeline/57655"), "{text}");
+        assert!(nu7_broadcast_warning(crate::ZeckNetwork::Mainnet).ends_with("/57655"));
     }
 
     #[test]
