@@ -755,6 +755,28 @@ function forgetWalletCaveats() {
   renderSproutUncoveredBanners();
 }
 
+// Start over must not carry a wallet file into the next run: the seed step
+// never clears it, so a seed typed afterwards would otherwise be scanned as
+// the old file and its balance shown as the seed's answer.
+function forgetLoadedWalletFile() {
+  ++walletOpenGeneration;
+  walletFile = null;
+  sproutPreviewWallet = null;
+  forgetWalletCaveats();
+  $("wallet-path").value = "";
+  $("wallet-passphrase").value = "";
+  $("wallet-passphrase-field").hidden = true;
+  $("wallet-summary").hidden = true;
+  $("wallet-next").disabled = true;
+  $("wallet-sprout-sweep").hidden = true;
+  $("sprout-sweep-run").disabled = true;
+  $("sprout-sweep-plan").textContent = "";
+  $("sprout-sweep-pool").textContent = "";
+  $("sprout-sweep-params").textContent = "";
+  $("wallet-open").disabled = false;
+  setStatus("wallet-status", "", "");
+}
+
 function renderSproutUncoveredBanners() {
   const tail = `Open it on the wallet screen to recover Sprout funds separately.`;
   const parts = [];
@@ -1632,6 +1654,28 @@ $("destination-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") { e.preventDefault(); validateDestination(); }
 });
 
+// A seed phrase is a different provenance model from a wallet file or a
+// standalone Sapling key, and only one of them can drive a scan. Taking both
+// and quietly preferring one would scan a wallet the user did not ask for and
+// report its balance as the answer. The CLI refuses the same pairs outright
+// (`--wallet-file` and `--sapling-key-file` each conflict with `--seed-file`);
+// refuse them here too rather than letting the two surfaces mean different
+// things. A wallet file and pasted Sapling keys do combine, as in the CLI.
+function scanKeySourceConflict(hasSeed, hasWallet, hasSaplingKeys) {
+  if (hasSeed && hasWallet) {
+    return "A seed phrase and a wallet file cannot be scanned together — \
+they are separate wallets. Run two scans: clear the seed phrase to scan the \
+wallet file, or clear the file path on the wallet screen and press Open wallet \
+file to scan the seed phrase.";
+  }
+  if (hasSeed && hasSaplingKeys) {
+    return "A seed phrase and a pasted Sapling spending key cannot be scanned together — \
+they are separate wallets. Run two scans: clear the key box to scan the seed \
+phrase, or clear the seed phrase to scan the pasted key.";
+  }
+  return null;
+}
+
 $("start-scan").addEventListener("click", async () => {
   // Three routes to the same scan: a seed phrase, a wallet file, or a
   // pasted Sapling spending key.
@@ -1646,20 +1690,11 @@ go back and provide one.",
     return;
   }
 
-  // A seed phrase and a standalone Sapling key are different provenance
-  // models, and only one of them can drive a scan. Taking both and quietly
-  // preferring one would scan a wallet the user did not ask for and report
-  // its balance as the answer. The CLI refuses the same pair outright
-  // (`--sapling-key-file` conflicts with `--seed-file`); refuse it here too
-  // rather than letting the two surfaces mean different things.
-  if (seedInput.value.trim() && hasTypedSaplingKeys) {
-    setStatus(
-      "config-status",
-      "A seed phrase and a pasted Sapling spending key cannot be scanned together — \
-they are separate wallets. Run two scans: clear the key box to scan the seed \
-phrase, or clear the seed phrase to scan the pasted key.",
-      "error",
-    );
+  const conflict = scanKeySourceConflict(
+    !!seedInput.value.trim(), !!walletFile, hasTypedSaplingKeys,
+  );
+  if (conflict) {
+    setStatus("config-status", conflict, "error");
     return;
   }
 
@@ -2633,6 +2668,7 @@ $("restart-flow").addEventListener("click", () => {
   setStatus("delete-workspace-status", "", "");
 
   seedInput.value = "";
+  forgetLoadedWalletFile();
   seedVisibility.checked = false;
   seedInput.classList.add("masked");
   seedNextBtn.disabled = true;
