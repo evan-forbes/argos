@@ -41,6 +41,7 @@ function harness(intercept = (_, __, fallback) => fallback()) {
         needs_passphrase: false, transparent_keys: 0, sapling_keys: 0,
         sprout_keys: 1, has_mnemonic: false, sprout_spendable_notes: 1,
         sprout_spendable_zatoshis: 100000, sprout_addresses: [], diagnostics: [],
+        sprout_nu7_warning: "NU7: Sprout recovery must be mined before activation; broadcasting alone is not enough. Check the current mainnet activation schedule.",
         coverage_notice: null, coverage_may_hide_funds: false,
       };
       if (command === "preview_sprout_sweep") {
@@ -49,6 +50,7 @@ function harness(intercept = (_, __, fallback) => fallback()) {
           notes: 1, gross_zatoshis: 100000, fee_zatoshis: 10000,
           net_zatoshis: 90000, lands_in_sapling: "Lands in Sapling",
           params_present: true, params_path: "/fixture/sprout.params",
+          nu7_warning: "NU7: Sprout recovery must be mined before activation; broadcasting alone is not enough. Check the current mainnet activation schedule.",
         };
       }
       throw new Error(`Unexpected IPC command: ${command}`);
@@ -108,6 +110,95 @@ test("opening another wallet previews the new path and passphrase", async () => 
     path: "/fixture/second.dat", passphrase: "fixture-two", network: "mainnet", dataDir: null,
   });
   assert.equal(h.$("sprout-sweep-status").textContent, "");
+});
+
+test("the NU7 deadline is visible as soon as Sprout keys are detected, before preview finishes", async () => {
+  const preview = deferred();
+  const h = harness(async (command, args, fallback) => {
+    if (command === "preview_sprout_sweep") await preview.promise;
+    return fallback();
+  });
+  await h.open("/fixture/sprout.dat");
+  const warning = h.$("wallet-sprout-nu7-warning");
+  assert.equal(warning.hidden, false);
+  assert.match(warning.textContent, /NU7.*mined before activation/);
+  assert.match(warning.textContent, /broadcasting alone is not enough/);
+  for (const id of ["scan-sprout-uncovered", "complete-sprout-uncovered", "delete-sprout-uncovered"]) {
+    assert.equal(h.$(id).hidden, false);
+    assert.match(h.$(id).textContent, /NU7.*mined before activation/);
+  }
+  assert.equal(h.$("sprout-sweep-run").disabled, true);
+  preview.resolve();
+  await flush();
+});
+
+test("Sprout keys with no cached notes still show the NU7 deadline before a full-block scan", async () => {
+  const h = harness(inspected({ sprout_spendable_notes: 0, sprout_spendable_zatoshis: 0 }));
+  await h.open("/fixture/keys-only.dat");
+  assert.equal(h.$("sprout-scan-panel").hidden, false);
+  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, false);
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /NU7/);
+});
+
+test("opening a wallet without Sprout clears an earlier NU7 warning", async () => {
+  const h = harness(async (command, args, fallback) => {
+    const response = await fallback();
+    if (command === "inspect_wallet_file" && args.path === "/fixture/no-sprout.dat") {
+      return { ...response, sprout_keys: 0, sprout_spendable_notes: 0, sprout_nu7_warning: "" };
+    }
+    return response;
+  });
+  await h.open("/fixture/sprout.dat");
+  await flush();
+  await h.open("/fixture/no-sprout.dat");
+  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, true);
+  assert.equal(h.$("wallet-sprout-nu7-warning").textContent, "");
+});
+
+test("testnet preview refreshes the warning without urging post-activation recovery", async () => {
+  const h = harness(async (command, args, fallback) => {
+    if (command === "execute_sprout_sweep") return {
+      sent: [{ value_swept: 5, txid: "fixture-tx" }], total_swept: 5,
+      skipped: [], rejected: [], warnings: [], error: null,
+    };
+    const response = await fallback();
+    if (command === "inspect_wallet_file") return {
+      ...response, sprout_nu7_warning: "Testnet NU7: see the activation warning before spending.",
+    };
+    if (command === "preview_sprout_sweep") return {
+      ...response, nu7_warning: "Testnet NU7: Sprout spending is unavailable at or after block 4,465,026.",
+    };
+    return response;
+  });
+  h.$("network-select").value = "testnet";
+  await h.open("/fixture/testnet.dat");
+  await flush();
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /Testnet.*4,465,026/);
+  h.$("sprout-destination").value = "fixture-destination";
+  await h.sweep();
+  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, false);
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /NU7/);
+});
+
+test("an accepted mainnet broadcast leaves the mined-before-activation warning visible", async () => {
+  const h = harness(async (command, args, fallback) => {
+    if (command === "execute_sprout_sweep") return {
+      sent: [{ value_swept: 5, txid: "fixture-tx" }], total_swept: 5,
+      skipped: [], rejected: [], warnings: [], error: null,
+    };
+    return fallback();
+  });
+  await h.open("/fixture/mainnet.dat");
+  await flush();
+  h.$("sprout-destination").value = "fixture-destination";
+  await h.sweep();
+  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, false);
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /mined before activation/);
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /broadcasting alone is not enough/);
+  for (const id of ["scan-sprout-uncovered", "complete-sprout-uncovered", "delete-sprout-uncovered"]) {
+    assert.equal(h.$(id).hidden, false);
+    assert.match(h.$(id).textContent, /mined before activation/);
+  }
 });
 
 function deferred() {
@@ -255,7 +346,7 @@ test("sweep progress and completion belong only to the active source", async () 
   assert.equal(h.$("sprout-sweep-status").textContent, "");
 });
 
-test("current wallet sweep still shows its transaction and clears its own warning", async () => {
+test("current wallet sweep shows its transaction and clears the uncovered-key notice", async () => {
   const h = harness((command, args, fallback) => command === "execute_sprout_sweep"
     ? Promise.resolve({ sent: [{ txid: "fixture-tx", value_swept: 90000 }], skipped: [], total_swept: 90000, error: null })
     : fallback());
@@ -264,7 +355,8 @@ test("current wallet sweep still shows its transaction and clears its own warnin
   await h.sweep();
   assert.match(h.$("sprout-sweep-results").children[0].textContent, /fixture-tx/);
   assert.match(h.$("sprout-sweep-status").textContent, /Swept 90000/);
-  assert.equal(h.$("delete-sprout-uncovered").hidden, true);
+  assert.doesNotMatch(h.$("delete-sprout-uncovered").textContent, /does not include Sprout/);
+  assert.match(h.$("delete-sprout-uncovered").textContent, /mined before activation/);
   assert.equal(h.$("sprout-sweep-run").disabled, true);
   await h.open("/fixture/new.dat");
   assert.equal(h.$("sprout-sweep-results").children.length, 0);

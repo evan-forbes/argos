@@ -279,6 +279,8 @@ pub struct WalletFileSummary {
     pub transparent_keys: usize,
     pub sapling_keys: usize,
     pub sprout_keys: usize,
+    /// NU7's Sprout spending deadline; empty when no Sprout keys were found.
+    pub sprout_nu7_warning: String,
     /// Sprout addresses, which are public and are the only way a user can
     /// tell which funds this file holds for the Sprout pool.
     pub sprout_addresses: Vec<String>,
@@ -535,6 +537,7 @@ pub async fn inspect_wallet_file(
                     transparent_keys: 0,
                     sapling_keys: 0,
                     sprout_keys: 0,
+                    sprout_nu7_warning: String::new(),
                     sprout_addresses: Vec::new(),
                     sprout_spendable_notes: 0,
                     sprout_spendable_zatoshis: 0,
@@ -567,6 +570,11 @@ pub async fn inspect_wallet_file(
         transparent_keys: keys.transparent.len(),
         sapling_keys: keys.sapling.len(),
         sprout_keys: sprout.sprout_keys,
+        sprout_nu7_warning: if sprout.sprout_keys > 0 {
+            argos_core::sprout_sweep::nu7_recovery_warning(network_from(&network_name))
+        } else {
+            String::new()
+        },
         sprout_addresses: sprout.sprout_addresses,
         sprout_spendable_notes: sprout.sprout_spendable_notes,
         sprout_spendable_zatoshis: sprout.sprout_spendable_zatoshis,
@@ -873,6 +881,7 @@ pub async fn execute_sweep(
 /// What a Sprout sweep would move, before anything is built.
 #[derive(Serialize)]
 pub struct SproutSweepPreview {
+    pub nu7_warning: String,
     pub notes: usize,
     pub gross_zatoshis: u64,
     pub fee_zatoshis: u64,
@@ -917,6 +926,7 @@ pub async fn preview_sprout_sweep(
 
     let params_path = argos_core::sprout_sweep::default_params_path();
     Ok(SproutSweepPreview {
+        nu7_warning: argos_core::sprout_sweep::nu7_recovery_warning(network),
         notes: plan.notes,
         gross_zatoshis: plan.gross_zatoshis,
         fee_zatoshis: plan.fee_zatoshis,

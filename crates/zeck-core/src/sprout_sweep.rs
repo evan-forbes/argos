@@ -51,6 +51,30 @@ const ACTIONS_PER_SWEEP: u64 = 2 + 2;
 /// The fee for a one-JoinSplit Sprout sweep.
 pub const SPROUT_SWEEP_FEE: u64 = ACTIONS_PER_SWEEP * ZAT_PER_ACTION;
 
+/// The NU7 spending deadline, shared by every Sprout recovery interface.
+///
+/// This is guidance, not a consensus activation check. Consult ZIP 259 for
+/// the current activation schedule rather than freezing a mainnet date here.
+pub fn nu7_recovery_warning(network: crate::ZeckNetwork) -> String {
+    let rules = "NU7 disables all version 4 transactions, the only format that can spend \
+                 Sprout funds. Funds remaining in Sprout at activation become unspendable \
+                 under NU7 rules.";
+    match network {
+        crate::ZeckNetwork::Mainnet => format!(
+            "URGENT: {rules} Start recovery promptly: recovery transactions must be \
+             mined before activation; broadcast alone is not enough. Full-block scans \
+             and proving can take substantial time. Check https://zips.z.cash/zip-0259 \
+             for the current mainnet activation height and upgrade status."
+        ),
+        crate::ZeckNetwork::Testnet => format!(
+            "{rules} The testnet NU7 activation height is 4,465,026. At or after this \
+             height you cannot spend Sprout funds. Recovery transactions needed to be \
+             mined before activation; broadcast alone is not enough. Check \
+             https://zips.z.cash/zip-0259 for the current upgrade status."
+        ),
+    }
+}
+
 /// Where to find the Sprout proving parameters.
 ///
 /// Checks `ARGOS_SPROUT_PARAMS` first, then the conventional zcashd location,

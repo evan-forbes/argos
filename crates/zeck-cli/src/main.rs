@@ -637,6 +637,7 @@ async fn sweep_sprout(
     sprout_params: Option<PathBuf>,
     gate: SweepGate,
 ) -> Result<()> {
+    print_sprout_nu7_warning(network);
     let SweepGate {
         dry_run,
         confirm_sweep,
@@ -845,6 +846,7 @@ async fn scan_sprout(
     sprout_params: Option<PathBuf>,
     confirm_sweep: bool,
 ) -> Result<()> {
+    print_sprout_nu7_warning(network);
     let p2p_network: P2pNetwork = network.into();
 
     // The destination is validated before the scan, not after. Discovering
@@ -1161,6 +1163,14 @@ fn fmt_elapsed(d: std::time::Duration) -> String {
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)
 }
 
+fn print_sprout_nu7_warning(network: ZeckNetwork) {
+    eprintln!();
+    for line in wrap_text(&argos_core::sprout_sweep::nu7_recovery_warning(network), 76) {
+        eprintln!("  {line}");
+    }
+    eprintln!();
+}
+
 /// Tell the user what a Sprout scan actually costs, before they start one.
 ///
 /// A Sprout scan cannot use lightwalletd — compact blocks carry no
@@ -1270,6 +1280,7 @@ fn print_sprout_inspection(
     data_dir: &Path,
 ) {
     if !keys.sprout.is_empty() {
+        print_sprout_nu7_warning(network);
         println!("Sprout addresses:");
         for key in &keys.sprout {
             // Encoded, not hex: a user has to be able to match this against a
@@ -1677,6 +1688,16 @@ async fn main() -> Result<()> {
             )
         }
     };
+
+    // Even an ordinary HD or imported-key recovery can leave Sprout behind.
+    // Warn as soon as those keys are known, before either scan route starts.
+    if matches!(cli.command, Commands::Scan | Commands::Sweep { .. })
+        && imported
+            .as_ref()
+            .is_some_and(|source| !source.keys().sprout.is_empty())
+    {
+        print_sprout_nu7_warning(network);
+    }
 
     // Only the seed-phrase sweep attaches a memo or a donation; the
     // imported-key and transparent-only sweeps send neither. Say so before

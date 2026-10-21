@@ -410,6 +410,7 @@ function renderWalletSummary(summary) {
   const sproutDetail = $("wallet-sprout-detail");
   const sproutScanCost = $("wallet-sprout-scan-cost");
   sproutWarning.hidden = summary.sprout_keys === 0;
+  showSproutNu7Warning(summary.sprout_keys > 0 ? summary.sprout_nu7_warning : "");
   sproutScanCost.hidden = true;
   sproutScanCost.innerHTML = "";
   sproutDetail.innerHTML = "";
@@ -528,6 +529,13 @@ function renderWalletSummary(summary) {
 }
 
 // ─── Sprout sweep ───────────────────────────────────────────────────────────
+
+function showSproutNu7Warning(warning) {
+  const el = $("wallet-sprout-nu7-warning");
+  el.textContent = warning ?? "";
+  el.hidden = !warning;
+}
+
 // Distinct from the ordinary sweep in every respect: the notes come from the
 // wallet file rather than a scan, the destination must be Sapling-capable,
 // and proving takes minutes per note against a 725 MB parameter file.
@@ -551,6 +559,8 @@ async function showSproutSweep() {
     });
 
     if (walletFile !== source) return;
+
+    if (preview.nu7_warning) showSproutNu7Warning(preview.nu7_warning);
 
     $("sprout-sweep-plan").textContent =
       `${preview.notes} note(s): ${fmt(preview.gross_zatoshis)} gross, ` +
@@ -715,6 +725,9 @@ async function runSproutSweep() {
 /// total as their entire balance — and then use the Delete workspace button
 /// sitting on that same screen, discarding the only copy of the keys.
 let uncoveredSproutKeys = 0;
+// A broadcast is not mined confirmation. This warning survives clearing the
+// uncovered-key count and is reset only when the wallet source changes.
+let sproutNu7Warning = "";
 
 /// Whether a Sprout sweep left nothing behind, so the "keep the original
 /// wallet file" caveat may go. Shared by both sweep handlers so they cannot
@@ -735,6 +748,7 @@ function noteUncoveredSproutKeys(summary) {
   // Only counts as uncovered if the file's own notes were not already
   // recovered and swept from the Sprout panel.
   uncoveredSproutKeys = summary.sprout_keys || 0;
+  sproutNu7Warning = summary.sprout_nu7_warning ?? "";
   renderSproutUncoveredBanners();
 }
 
@@ -751,6 +765,7 @@ function notePartialImport(summary) {
 
 function forgetWalletCaveats() {
   uncoveredSproutKeys = 0;
+  sproutNu7Warning = "";
   partialImportNotice = null;
   renderSproutUncoveredBanners();
 }
@@ -766,6 +781,7 @@ function renderSproutUncoveredBanners() {
         tail,
     );
   }
+  if (sproutNu7Warning) parts.push(sproutNu7Warning);
   if (partialImportNotice) {
     parts.push(`This total may not be your whole balance. ${partialImportNotice}`);
   }
@@ -795,6 +811,7 @@ async function openWalletFile() {
   $("sprout-sweep-plan").textContent = "";
   $("sprout-sweep-pool").textContent = "";
   $("sprout-sweep-params").textContent = "";
+  showSproutNu7Warning("");
   $("wallet-open").disabled = false;
   const path = $("wallet-path").value.trim();
   if (!path) {
