@@ -7,8 +7,11 @@ standalone Sapling or Sprout spending keys.
 > **Urgent: recover Sprout funds before NU7 activates.** NU7 disables version 4
 > transactions, including all Sprout spends. Your recovery transaction must be
 > **mined before activation**; broadcasting it is not enough. Start promptly:
-> a full Sprout scan can take days. Check the current mainnet activation schedule
-> in [ZIP 259](https://zips.z.cash/zip-0259) before recovering. Funds remaining in
+> a full Sprout scan can take days. Mainnet activation is targeted for about
+> November 5, 2026; the final height is not yet assigned (proposed in
+> [zcash/zips#1405](https://github.com/zcash/zips/pull/1405); see the
+> [NU7 timeline](https://forum.zcashcommunity.com/t/nu7-timeline/57655)). Check
+> [ZIP 259](https://zips.z.cash/zip-0259) for the assigned height. Funds remaining in
 > Sprout after activation will be unspendable under the current NU7 rules.
 
 This repository now contains:
@@ -119,8 +122,12 @@ cannot authorize the sweep Argos is promising.
 
 > **Sprout recovery deadline:** the sweep must be **mined before NU7 activation**.
 > NU7 disables version 4 transactions and therefore Sprout spends. A broadcast
-> or completed scan alone does not meet this deadline. Start promptly and check
-> [ZIP 259](https://zips.z.cash/zip-0259) for the current mainnet schedule.
+> or completed scan alone does not meet this deadline. Mainnet activation is
+> targeted for about November 5, 2026; the final height is not yet assigned
+> (proposed in [zcash/zips#1405](https://github.com/zcash/zips/pull/1405); see the
+> [NU7 timeline](https://forum.zcashcommunity.com/t/nu7-timeline/57655)). Start
+> promptly and check [ZIP 259](https://zips.z.cash/zip-0259) for the assigned height.
+> After a sweep broadcasts, confirm the transaction is mined before activation.
 > Remaining Sprout funds will be unspendable under the current NU7 rules.
 > Historical scanning and reporting can still identify funds after activation.
 

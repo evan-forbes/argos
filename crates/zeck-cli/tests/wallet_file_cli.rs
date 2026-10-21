@@ -63,6 +63,14 @@ fn nu7_warning_reaches_wallet_inspection_only_when_sprout_keys_exist() {
     );
     assert!(warning.contains("Start recovery promptly"), "{warning}");
     assert!(
+        warning.contains("targeted for about November 5, 2026"),
+        "{warning}"
+    );
+    assert!(
+        warning.contains("final height is not yet assigned (proposed in zcash/zips#1405)"),
+        "{warning}"
+    );
+    assert!(
         warning.contains("https://zips.z.cash/zip-0259"),
         "{warning}"
     );
@@ -103,6 +111,52 @@ fn nu7_warning_precedes_scan_preparation_for_wallet_and_standalone_keys() {
             .find("Error:")
             .expect("invalid destination must fail");
         assert!(warning < failure, "{stderr}");
+    }
+}
+
+/// PR #263 review item 4: `scan` and `sweep` warn about NU7 only when the
+/// wallet file holds Sprout keys. A zcashd wallet with transparent and Sapling
+/// keys but no Sprout must stay silent, or the warning becomes noise.
+///
+/// Each run is checked to have got past the point where the warning is
+/// printed (the import line for `scan`, the destination refusal for
+/// `sweep`), and the Sprout fixture is run the same way as a control, so the
+/// silence cannot come from failing too early.
+#[test]
+fn nu7_warning_stays_silent_for_scan_and_sweep_of_a_wallet_without_sprout() {
+    const NO_SPROUT: &str = "modern-plaintext.dat";
+    let run = |wallet: &str, sweep: bool| {
+        let path = fixture(wallet);
+        let dir = scratch_dir(&format!("nu7-silent-{wallet}-{sweep}"));
+        let mut args = vec![
+            "--wallet-file",
+            path.to_str().unwrap(),
+            "--accept-tos",
+            "--lightwalletd-url",
+            "https://127.0.0.1:1",
+            "--data-dir",
+            &dir,
+        ];
+        if sweep {
+            // Refused before any network access, after the warning point.
+            args.extend(["sweep", "--destination", "invalid-destination"]);
+        } else {
+            args.push("scan");
+        }
+        let out = argos(&args);
+        assert!(!out.status.success());
+        nu7_warning(&out.stderr)
+    };
+
+    for sweep in [false, true] {
+        let silent = run(NO_SPROUT, sweep);
+        assert!(silent.contains("Imported"), "{silent}");
+        assert!(silent.contains("Error:"), "{silent}");
+        assert!(!silent.contains("NU7"), "sweep={sweep}: {silent}");
+        assert!(!silent.contains("version 4"), "sweep={sweep}: {silent}");
+
+        let control = run(SPROUT_PLAINTEXT, sweep);
+        assert!(control.contains("NU7"), "sweep={sweep}: {control}");
     }
 }
 

@@ -737,6 +737,7 @@ async fn sweep_sprout(
             sent.txid
         );
     }
+    print_sprout_nu7_broadcast_warning(network, &outcome);
     report_sprout_skips_and_errors(&outcome);
     println!("Swept {} to {destination}", format_zec(outcome.total_swept));
     if outcome.destination_kind
@@ -972,6 +973,7 @@ async fn scan_sprout(
     for sent in &outcome.sent {
         println!("  swept {} — {}", format_zec(sent.value_swept), sent.txid);
     }
+    print_sprout_nu7_broadcast_warning(network, &outcome);
     report_sprout_skips_and_errors(&outcome);
     println!("Swept {} to {destination}", format_zec(outcome.total_swept));
     if outcome.error.is_some() {
@@ -1166,6 +1168,25 @@ fn fmt_elapsed(d: std::time::Duration) -> String {
 fn print_sprout_nu7_warning(network: ZeckNetwork) {
     eprintln!();
     for line in wrap_text(&argos_core::sprout_sweep::nu7_recovery_warning(network), 76) {
+        eprintln!("  {line}");
+    }
+    eprintln!();
+}
+
+/// Once a Sprout sweep has broadcast, the deadline that matters is mining:
+/// "start recovery promptly" would be the wrong advice here.
+fn print_sprout_nu7_broadcast_warning(
+    network: ZeckNetwork,
+    outcome: &argos_core::sprout_sweep::SproutSweepOutcome,
+) {
+    if outcome.sent.is_empty() {
+        return;
+    }
+    eprintln!();
+    for line in wrap_text(
+        &argos_core::sprout_sweep::nu7_broadcast_warning(network),
+        76,
+    ) {
         eprintln!("  {line}");
     }
     eprintln!();
