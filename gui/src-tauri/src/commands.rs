@@ -1337,6 +1337,27 @@ async fn sprout_tip_anchor(
     }
 }
 
+/// The sweep is broadcast through lightwalletd after the catch-up scan and
+/// the proofs. A server address that cannot work is refused here, before
+/// either, rather than found out at broadcast, as the CLI does.
+fn validate_sweep_endpoint(lightwalletd_url: &str) -> Result<(), String> {
+    argos_core::lightwalletd::validated_lightwalletd_endpoints(lightwalletd_url)
+        .map(|_| ())
+        .map_err(|err| {
+            format!(
+                "the sweep is broadcast through the lightwalletd server, and that address \
+                 cannot work ({err}). Fix it before sweeping."
+            )
+        })
+}
+
+/// The sweep's own warnings, led by the tip caveat when the catch-up scan
+/// could not confirm it reached the chain tip: a user told nothing would
+/// take the result for a confirmed one.
+fn warnings_with_tip(tip_warning: Option<String>, warnings: Vec<String>) -> Vec<String> {
+    tip_warning.into_iter().chain(warnings).collect()
+}
+
 /// Sweep the notes a scan found.
 ///
 /// Resuming a saved scan is a short catch-up, not a rescan: it continues from
@@ -1369,6 +1390,7 @@ pub async fn sweep_sprout_from_scan(
     // should fail here, not after the notes are re-derived.
     argos_core::sprout_sweep::parse_sapling_destination(&destination, net)
         .map_err(|err| err.to_string())?;
+    validate_sweep_endpoint(&lightwalletd_url)?;
 
     let p2p: argos_core::p2p::wire::P2pNetwork = net.into();
     // Blank resolves to the app default, as it does for inspection, preview
@@ -1384,7 +1406,7 @@ pub async fn sweep_sprout_from_scan(
         );
     }
 
-    let (tip_anchor, _) = sprout_tip_anchor(net, &lightwalletd_url).await;
+    let (tip_anchor, tip_warning) = sprout_tip_anchor(net, &lightwalletd_url).await;
     let emitter = app.clone();
     let result = argos_core::sprout_scan_run::run_sprout_scan(
         &decoded,
@@ -1456,7 +1478,7 @@ pub async fn sweep_sprout_from_scan(
                 value_swept: h.value_swept,
             })
             .collect(),
-        warnings: outcome.warnings,
+        warnings: warnings_with_tip(tip_warning, outcome.warnings),
         error: outcome.error,
     })
 }
@@ -2092,7 +2114,30 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
+    use super::{validate_sweep_endpoint, warnings_with_tip};
     use argos_core::sprout_recovery::{SpentSproutNote, SproutRecovery};
+
+    #[test]
+    fn sweep_refuses_an_unusable_lightwalletd_url_up_front() {
+        for bad in ["nonono", "", "http://wallet.example:9067"] {
+            let err = validate_sweep_endpoint(bad).expect_err(bad);
+            assert!(err.contains("lightwalletd"), "{bad}: {err}");
+        }
+        validate_sweep_endpoint("https://zec.rocks:443").expect("a real endpoint passes");
+    }
+
+    #[test]
+    fn the_tip_warning_reaches_the_sweep_report() {
+        let got = warnings_with_tip(Some("tip unconfirmed".into()), vec!["journal".into()]);
+        assert_eq!(
+            got,
+            vec!["tip unconfirmed".to_owned(), "journal".to_owned()]
+        );
+        assert_eq!(
+            warnings_with_tip(None, vec!["journal".into()]),
+            vec!["journal"]
+        );
+    }
 
     fn spent_note() -> SpentSproutNote {
         SpentSproutNote {
