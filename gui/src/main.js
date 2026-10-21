@@ -2361,53 +2361,79 @@ $("execute-sweep").addEventListener("click", async () => {
 
 // ─── Step 6: Complete ─────────────────────────────────────────────────────────
 
+// The seed-phrase route reports "pending" then "confirmed"; the seedless
+// routes (imported wallet file, pasted Sapling key, transparent-only) report
+// "broadcast" and do not poll for confirmation. Both mean the transaction is
+// on the network and cannot be undone, so they must never read as failed: a
+// user told a sent transaction failed may retry and attempt a double spend.
+function txStatusKind(status) {
+  if (status === "confirmed") return "confirmed";
+  if (status === "pending" || status === "broadcast") return "sent";
+  return "failed";
+}
+
+function txStatusLabel(status) {
+  const kind = txStatusKind(status);
+  if (kind === "confirmed") return "Confirmed";
+  if (kind === "sent") return "Broadcast — awaiting confirmation";
+  return "Failed";
+}
+
+function sweepStatusCounts(results) {
+  const counts = { confirmed: 0, pending: 0, failed: 0, broadcast: 0 };
+  for (const r of results) {
+    const kind = txStatusKind(r.status);
+    if (kind === "confirmed") counts.confirmed += 1;
+    else if (kind === "sent") counts.pending += 1;
+    else counts.failed += 1;
+  }
+  counts.broadcast = counts.confirmed + counts.pending;
+  return counts;
+}
+
+function sweepCompleteSummary(results, error) {
+  const { confirmed, failed, broadcast } = sweepStatusCounts(results);
+  if (error) {
+    // The sweep aborted partway. The transactions below were already
+    // broadcast and are irreversible; the remaining accounts were not swept.
+    // Surface this so the user does not assume nothing was sent and retry
+    // (which would double-broadcast) — audit Issue E.
+    return `The sweep stopped before completing, but ${broadcast} transaction${broadcast === 1 ? " was" : "s were"} already broadcast and cannot be undone (listed below). ` +
+      `The remaining accounts were not swept. Rescan or check a block explorer before retrying, so you do not broadcast duplicates. Error: ${error}`;
+  }
+  if (results.length === 0) {
+    // Nothing was broadcast because every account with a balance was skipped
+    // (below the fee floor, or transparent funds that couldn't be shielded).
+    // The reasons are listed below — this is NOT a broadcast failure.
+    return "No funds were swept — every account with a balance was skipped (reasons below).";
+  }
+  if (failed === results.length) {
+    return "All transactions failed to broadcast. No funds were moved.";
+  }
+  if (confirmed > 0) {
+    return `${confirmed} transaction${confirmed > 1 ? "s" : ""} confirmed on-chain. Your funds are on their way.`;
+  }
+  return `${broadcast} transaction${broadcast > 1 ? "s" : ""} broadcast to the Zcash network. Confirmation usually takes 1–2 minutes.`;
+}
+
 function renderCompleteScreen(results, skipped, donated, donationRate, error, donationNote) {
   $("complete-return-address-matches").hidden = !state.retainedAddressSearchId;
   if (state.retainedAddressSearchId) {
     state.addressMatchRecoveryLocked = false;
     document.dispatchEvent(new CustomEvent("address-search-lock-recovery", { detail: { locked: false } }));
   }
-  const confirmed = results.filter((r) => r.status === "confirmed").length;
-  const pending = results.filter((r) => r.status === "pending").length;
-  const failed = results.filter((r) => r.status === "failed").length;
-  const broadcast = confirmed + pending;
-
-  if (error) {
-    // The sweep aborted partway. The transactions below were already
-    // broadcast and are irreversible; the remaining accounts were not swept.
-    // Surface this so the user does not assume nothing was sent and retry
-    // (which would double-broadcast) — audit Issue E.
-    $("complete-summary").textContent =
-      `The sweep stopped before completing, but ${broadcast} transaction${broadcast === 1 ? " was" : "s were"} already broadcast and cannot be undone (listed below). ` +
-      `The remaining accounts were not swept. Rescan or check a block explorer before retrying, so you do not broadcast duplicates. Error: ${error}`;
-  } else if (results.length === 0) {
-    // Nothing was broadcast because every account with a balance was skipped
-    // (below the fee floor, or transparent funds that couldn't be shielded).
-    // The reasons are listed below — this is NOT a broadcast failure.
-    $("complete-summary").textContent =
-      "No funds were swept — every account with a balance was skipped (reasons below).";
-  } else if (failed === results.length) {
-    $("complete-summary").textContent = "All transactions failed to broadcast. No funds were moved.";
-  } else if (confirmed > 0) {
-    $("complete-summary").textContent =
-      `${confirmed} transaction${confirmed > 1 ? "s" : ""} confirmed on-chain. Your funds are on their way.`;
-  } else {
-    $("complete-summary").textContent =
-      `${broadcast} transaction${broadcast > 1 ? "s" : ""} broadcast to the Zcash network. Confirmation usually takes 1–2 minutes.`;
-  }
+  const { broadcast } = sweepStatusCounts(results);
+  $("complete-summary").textContent = sweepCompleteSummary(results, error);
 
   const container = $("complete-txids");
   container.innerHTML = "";
   results.forEach((r) => {
     const card = document.createElement("div");
-    card.className = "txid-card" + (r.status === "failed" ? " txid-card--failed" : "");
+    card.className = "txid-card" + (txStatusKind(r.status) === "failed" ? " txid-card--failed" : "");
 
     const label = document.createElement("div");
     label.className = "txid-label";
-    const statusTag = r.status === "confirmed" ? "Confirmed" :
-                      r.status === "pending"   ? "Broadcast — awaiting confirmation" :
-                                                 "Failed";
-    label.textContent = `Account ${r.source_account} · ${statusTag}`;
+    label.textContent = `Account ${r.source_account} · ${txStatusLabel(r.status)}`;
     card.appendChild(label);
 
     if (r.txid) {
