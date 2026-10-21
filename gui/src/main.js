@@ -1002,8 +1002,25 @@ async function checkSaplingKeys() {
 // The fallback for a wallet whose note data is missing, and the only route
 // for a raw key with no wallet file. Hours, so it checkpoints and resumes.
 
+// The raw lines of the key box, unfiltered. The backend (`collect_scan_keys`)
+// owns the skip rule and numbers a failure by the line the user can see, so
+// dropping blanks here would shift every reported number away from the box.
+function sproutScanKeyLines() {
+  const box = $("sprout-scan-keys");
+  if (!box) return [];
+  return box.value.split("\n");
+}
+
+// Each key paired with the line it sits on. Blank lines and `#` comments are
+// annotation, the same rule as the CLI key file and the Sapling box.
+function sproutScanKeyEntries() {
+  return sproutScanKeyLines()
+    .map((line, i) => ({ key: line.trim(), line: i + 1 }))
+    .filter(({ key }) => key !== "" && !key.startsWith("#"));
+}
+
 function sproutScanKeys() {
-  return $("sprout-scan-keys").value.split("\n").map((k) => k.trim()).filter(Boolean);
+  return sproutScanKeyEntries().map(({ key }) => key);
 }
 
 // Custom P2P peers, for when every public peer's inbound slots are full.
@@ -1044,7 +1061,7 @@ function sproutScanPeers() {
 async function checkSproutKeys() {
   const list = $("sprout-scan-addresses");
   list.innerHTML = "";
-  const keys = sproutScanKeys();
+  const keys = sproutScanKeyEntries();
   if (!keys.length) {
     setStatus(
       "sprout-scan-status",
@@ -1056,14 +1073,14 @@ async function checkSproutKeys() {
     return;
   }
   // Checked before the scan, not six hours into it.
-  for (const [i, key] of keys.entries()) {
+  for (const { key, line } of keys) {
     try {
       const addr = await invoke("check_sprout_key", { key, network: $("network-select").value });
       const li = document.createElement("li");
       li.textContent = addr;
       list.appendChild(li);
     } catch (err) {
-      setStatus("sprout-scan-status", `✗ key ${i + 1}: ${err}`, "error");
+      setStatus("sprout-scan-status", `✗ line ${line}: ${err}`, "error");
       return;
     }
   }
@@ -1096,7 +1113,7 @@ async function runSproutScan() {
 
   try {
     const report = await invoke("start_sprout_scan", {
-      keys,
+      keys: sproutScanKeyLines(),
       // The wallet file's own Sprout keys are merged in by the backend, so
       // leaving the box blank genuinely works now.
       path: walletFile ? walletFile.path : null,
@@ -1170,7 +1187,7 @@ async function runSproutScanSweep() {
 
   try {
     const report = await invoke("sweep_sprout_from_scan", {
-      keys: sproutScanKeys(),
+      keys: sproutScanKeyLines(),
       path: walletFile ? walletFile.path : null,
       passphrase: walletFile ? walletFile.passphrase : null,
       destination,

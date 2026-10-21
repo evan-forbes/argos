@@ -1113,12 +1113,15 @@ fn collect_scan_keys(
 
     for (index, key) in typed.iter().enumerate() {
         let key = key.trim();
-        if key.is_empty() {
+        // Blank lines and `#` comments are annotation, as in the CLI key file
+        // and `keys_from_sapling_strings`. `typed` is the box's raw lines, so
+        // `index` is the line the user sees.
+        if key.is_empty() || key.starts_with('#') {
             continue;
         }
         keys.push(
             argos_core::sprout_key::decode_sprout_spending_key(key, network)
-                .map_err(|err| format!("key {}: {err}", index + 1))?,
+                .map_err(|err| format!("line {}: {err}", index + 1))?,
         );
     }
 
@@ -2092,6 +2095,28 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn scan_keys_skip_comments_and_blank_lines() {
+        let typed = vec![
+            "# note".to_string(),
+            String::new(),
+            "  # indented".to_string(),
+        ];
+        // Comments are skipped rather than decoded, so what remains is the
+        // "nothing to scan" refusal, not a bad-key error on line 1.
+        let err = super::collect_scan_keys(None, None, &typed, argos_core::ZeckNetwork::Mainnet)
+            .unwrap_err();
+        assert!(err.starts_with("no Sprout spending keys"), "{err}");
+    }
+
+    #[test]
+    fn scan_key_error_names_the_visible_line() {
+        let typed = vec!["# note".to_string(), String::new(), "not-a-key".to_string()];
+        let err = super::collect_scan_keys(None, None, &typed, argos_core::ZeckNetwork::Mainnet)
+            .unwrap_err();
+        assert!(err.starts_with("line 3:"), "{err}");
+    }
+
     use argos_core::sprout_recovery::{SpentSproutNote, SproutRecovery};
 
     fn spent_note() -> SpentSproutNote {
