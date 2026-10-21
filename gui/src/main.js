@@ -1775,6 +1775,9 @@ phrase, or clear the seed phrase to scan the pasted key.",
           sapling_keys: typedSaplingKeys,
           // Checked against the key source before the scan starts.
           sweep_memo: state.memo,
+          // Checked before the scan: a seedless sweep's transparent leg
+          // cannot pay an Orchard-only address.
+          destination: state.destination,
         },
       });
     } else {
