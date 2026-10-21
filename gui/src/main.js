@@ -549,10 +549,11 @@ async function showSproutSweep() {
   panel.hidden = false;
 
   try {
+    const previewNetwork = $("network-select").value;
     const preview = await invoke("preview_sprout_sweep", {
       path: source.path,
       passphrase: source.passphrase,
-      network: $("network-select").value,
+      network: previewNetwork,
       // Where the scan panel keeps its checkpoint: a scan of these keys
       // settles spends the wallet file cannot see.
       dataDir: $("data-dir").value.trim() || null,
@@ -560,7 +561,11 @@ async function showSproutSweep() {
 
     if (walletFile !== source) return;
 
-    if (preview.nu7_warning) showSproutNu7Warning(preview.nu7_warning);
+    // A preview for a network the user has since moved off, or one that
+    // lands after a broadcast, would put back the wrong warning.
+    if (preview.nu7_warning && previewNetwork === $("network-select").value && !sproutNu7Broadcast) {
+      showSproutNu7Warning(preview.nu7_warning);
+    }
 
     $("sprout-sweep-plan").textContent =
       `${preview.notes} note(s): ${fmt(preview.gross_zatoshis)} gross, ` +
@@ -633,6 +638,7 @@ async function runSproutSweep() {
     if (walletFile !== source) return;
 
     const list = $("sprout-sweep-results");
+    const nu7Refresh = noteSproutBroadcast(report);
     for (const sent of report.sent) {
       const li = document.createElement("li");
       li.textContent = `${fmt(sent.value_swept)} — ${sent.txid}`;
@@ -704,6 +710,7 @@ async function runSproutSweep() {
         "To finish moving them to Orchard, shield them from within your own wallet.";
       list.appendChild(li);
     }
+    await nu7Refresh;
   } catch (err) {
     if (walletFile !== source) return;
     setStatus("sprout-sweep-status", `✗ ${err}`, "error");
@@ -728,6 +735,49 @@ let uncoveredSproutKeys = 0;
 // A broadcast is not mined confirmation. This warning survives clearing the
 // uncovered-key count and is reset only when the wallet source changes.
 let sproutNu7Warning = "";
+// Set once a Sprout sweep has broadcast: the warning then asks the user to
+// confirm the transaction is mined instead of urging them to start.
+let sproutNu7Broadcast = false;
+
+/// Rebuild the NU7 warning for the network now selected and the current
+/// broadcast state. The wallet screen comes before the network picker, so
+/// the text built at wallet open can name the wrong network. Does nothing
+/// unless a wallet with Sprout keys is open.
+async function refreshSproutNu7Warning() {
+  if (!sproutNu7Warning) return;
+  const source = walletFile;
+  const network = $("network-select").value;
+  const broadcast = sproutNu7Broadcast;
+  let text;
+  try {
+    text = await invoke("sprout_nu7_warning", { network, broadcast });
+  } catch (err) {
+    // Keep the existing text: a deadline warning for the wrong network is
+    // still better than none.
+    console.error("could not refresh the NU7 warning:", err);
+    return;
+  }
+  if (
+    walletFile !== source ||
+    !sproutNu7Warning ||
+    !text ||
+    $("network-select").value !== network ||
+    sproutNu7Broadcast !== broadcast
+  ) {
+    return;
+  }
+  sproutNu7Warning = text;
+  showSproutNu7Warning(text);
+  renderSproutUncoveredBanners();
+}
+
+/// After a Sprout sweep: once anything was broadcast, switch the warning to
+/// "broadcast, but must be mined before activation".
+function noteSproutBroadcast(report) {
+  if ((report.sent ?? []).length === 0) return;
+  sproutNu7Broadcast = true;
+  return refreshSproutNu7Warning();
+}
 
 /// Whether a Sprout sweep left nothing behind, so the "keep the original
 /// wallet file" caveat may go. Shared by both sweep handlers so they cannot
@@ -749,6 +799,7 @@ function noteUncoveredSproutKeys(summary) {
   // recovered and swept from the Sprout panel.
   uncoveredSproutKeys = summary.sprout_keys || 0;
   sproutNu7Warning = summary.sprout_nu7_warning ?? "";
+  sproutNu7Broadcast = false;
   renderSproutUncoveredBanners();
 }
 
@@ -766,6 +817,7 @@ function notePartialImport(summary) {
 function forgetWalletCaveats() {
   uncoveredSproutKeys = 0;
   sproutNu7Warning = "";
+  sproutNu7Broadcast = false;
   partialImportNotice = null;
   renderSproutUncoveredBanners();
 }
@@ -1197,6 +1249,7 @@ async function runSproutScanSweep() {
       peers,
     });
 
+    noteSproutBroadcast(report);
     for (const sent of report.sent) {
       const li = document.createElement("li");
       li.textContent = `${fmt(sent.value_swept)} — ${sent.txid}`;
@@ -1454,6 +1507,7 @@ $("network-select").addEventListener("change", () => {
   if ($("server-preset").value === "recommended") {
     $("lightwalletd-url").value = SERVER_PRESETS[$("network-select").value] ?? SERVER_PRESETS.mainnet;
   }
+  refreshSproutNu7Warning();
 });
 
 $("server-preset").addEventListener("change", () => {

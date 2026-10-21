@@ -570,11 +570,7 @@ pub async fn inspect_wallet_file(
         transparent_keys: keys.transparent.len(),
         sapling_keys: keys.sapling.len(),
         sprout_keys: sprout.sprout_keys,
-        sprout_nu7_warning: if sprout.sprout_keys > 0 {
-            argos_core::sprout_sweep::nu7_recovery_warning(network_from(&network_name))
-        } else {
-            String::new()
-        },
+        sprout_nu7_warning: summary_nu7_warning(sprout.sprout_keys, &network_name),
         sprout_addresses: sprout.sprout_addresses,
         sprout_spendable_notes: sprout.sprout_spendable_notes,
         sprout_spendable_zatoshis: sprout.sprout_spendable_zatoshis,
@@ -1500,6 +1496,27 @@ pub async fn sweep_sprout_from_scan(
     })
 }
 
+/// The wallet summary's NU7 warning: empty unless the file holds Sprout keys.
+fn summary_nu7_warning(sprout_keys: usize, network_name: &str) -> String {
+    if sprout_keys == 0 {
+        return String::new();
+    }
+    argos_core::sprout_sweep::nu7_recovery_warning(network_from(network_name))
+}
+
+/// The NU7 warning text, re-fetched by the frontend when the network picker
+/// changes after a wallet was opened, and after a Sprout sweep broadcast
+/// (`broadcast`), when the advice becomes "confirm it is mined".
+#[tauri::command]
+pub fn sprout_nu7_warning(network: String, broadcast: bool) -> String {
+    let network = network_from(&network);
+    if broadcast {
+        argos_core::sprout_sweep::nu7_broadcast_warning(network)
+    } else {
+        argos_core::sprout_sweep::nu7_recovery_warning(network)
+    }
+}
+
 // Not gated on `sprout`: `check_sapling_key` is a core-Sapling command and
 // needs this too. It is a plain string-to-enum mapping with no Sprout
 // dependency of its own.
@@ -2131,7 +2148,38 @@ fn parse_zec_to_zatoshis(input: &str) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::refuse_unreachable_sweep_destination;
+    use super::{refuse_unreachable_sweep_destination, sprout_nu7_warning, summary_nu7_warning};
+
+    /// PR #263 review item 4: the wallet summary carries the NU7 warning
+    /// only when the file holds Sprout keys, and for the network asked for.
+    #[test]
+    fn summary_nu7_warning_is_empty_without_sprout_keys() {
+        assert_eq!(summary_nu7_warning(0, "mainnet"), "");
+        assert_eq!(summary_nu7_warning(0, "testnet"), "");
+    }
+
+    #[test]
+    fn summary_nu7_warning_follows_the_selected_network() {
+        let mainnet = summary_nu7_warning(1, "mainnet");
+        assert!(mainnet.contains("November 5, 2026"), "{mainnet}");
+        assert!(!mainnet.contains("4,465,026"), "{mainnet}");
+        let testnet = summary_nu7_warning(2, "testnet");
+        assert!(testnet.contains("4,465,026"), "{testnet}");
+        assert!(!testnet.contains("November 5"), "{testnet}");
+    }
+
+    /// PR #263 review items 2 and 3: the GUI re-fetches the warning when the
+    /// network changes, and after a broadcast switches to the mining wording.
+    #[test]
+    fn sprout_nu7_warning_command_picks_network_and_broadcast_wording() {
+        let before = sprout_nu7_warning("testnet".into(), false);
+        assert!(before.contains("4,465,026"), "{before}");
+        let after = sprout_nu7_warning("mainnet".into(), true);
+        assert!(after.contains("confirm it is mined"), "{after}");
+        assert!(!after.contains("Start recovery promptly"), "{after}");
+        let start = sprout_nu7_warning("mainnet".into(), false);
+        assert!(start.contains("Start recovery promptly"), "{start}");
+    }
     use argos_core::argos_wallet_import::{keys::TransparentKey, ImportedKeys, Provenance};
     use argos_core::sprout_recovery::{SpentSproutNote, SproutRecovery};
     use argos_core::ZeckNetwork;

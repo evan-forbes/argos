@@ -3,6 +3,19 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 
+// Stand-in for the `sprout_nu7_warning` command: distinct text per network
+// and per broadcast state, shaped like the real core strings.
+function nu7Text({ network, broadcast }) {
+  if (broadcast) {
+    return `${network} NU7: your Sprout recovery transaction was broadcast, but it must be ` +
+      `mined before NU7 activation; confirm it is mined.`;
+  }
+  return network === "testnet"
+    ? "Testnet NU7: the activation height is 4,465,026; broadcast alone is not enough."
+    : "URGENT: NU7 mainnet targeted for about November 5, 2026. Start recovery promptly: " +
+      "must be mined before activation; broadcast alone is not enough.";
+}
+
 // Exercise wallet opening, summary rendering and preview together. Only the
 // desktop IPC boundary and DOM are stand-ins; no wallet secrets or funds are used.
 function harness(intercept = (_, __, fallback) => fallback()) {
@@ -44,6 +57,7 @@ function harness(intercept = (_, __, fallback) => fallback()) {
         sprout_nu7_warning: "NU7: Sprout recovery must be mined before activation; broadcasting alone is not enough. Check the current mainnet activation schedule.",
         coverage_notice: null, coverage_may_hide_funds: false,
       };
+      if (command === "sprout_nu7_warning") return nu7Text(args);
       if (command === "preview_sprout_sweep") {
         previews.push({ ...args });
         return {
@@ -180,7 +194,7 @@ test("testnet preview refreshes the warning without urging post-activation recov
   assert.match(h.$("wallet-sprout-nu7-warning").textContent, /NU7/);
 });
 
-test("an accepted mainnet broadcast leaves the mined-before-activation warning visible", async () => {
+test("an accepted mainnet broadcast switches the warning to confirming it is mined", async () => {
   const h = harness(async (command, args, fallback) => {
     if (command === "execute_sprout_sweep") return {
       sent: [{ value_swept: 5, txid: "fixture-tx" }], total_swept: 5,
@@ -192,13 +206,110 @@ test("an accepted mainnet broadcast leaves the mined-before-activation warning v
   await flush();
   h.$("sprout-destination").value = "fixture-destination";
   await h.sweep();
-  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, false);
-  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /mined before activation/);
-  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /broadcasting alone is not enough/);
+  await flush();
+  const warning = h.$("wallet-sprout-nu7-warning");
+  assert.equal(warning.hidden, false);
+  assert.match(warning.textContent, /^mainnet NU7: .*broadcast, but it must be mined before NU7 activation; confirm it is mined/);
+  assert.doesNotMatch(warning.textContent, /URGENT|Start recovery promptly/);
   for (const id of ["scan-sprout-uncovered", "complete-sprout-uncovered", "delete-sprout-uncovered"]) {
     assert.equal(h.$(id).hidden, false);
-    assert.match(h.$(id).textContent, /mined before activation/);
+    assert.match(h.$(id).textContent, /confirm it is mined/);
+    assert.doesNotMatch(h.$(id).textContent, /Start recovery promptly/);
   }
+});
+
+test("a sweep that broadcast nothing keeps the start-recovery wording", async () => {
+  const requested = [];
+  const h = harness(async (command, args, fallback) => {
+    if (command === "sprout_nu7_warning") requested.push({ ...args });
+    if (command === "execute_sprout_sweep") return {
+      sent: [], total_swept: 0, skipped: [], rejected: ["refused"], warnings: [], error: null,
+    };
+    return fallback();
+  });
+  await h.open("/fixture/mainnet.dat");
+  await flush();
+  h.$("sprout-destination").value = "fixture-destination";
+  await h.sweep();
+  await flush();
+  assert.equal(requested.filter((r) => r.broadcast).length, 0);
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /mined before activation/);
+});
+
+test("changing the network after opening a Sprout wallet rebuilds the warning for that network", async () => {
+  const h = harness();
+  await h.open("/fixture/sprout.dat");
+  await flush();
+  h.$("network-select").value = "testnet";
+  await h.peek("refreshSproutNu7Warning()");
+  const ids = ["wallet-sprout-nu7-warning", "scan-sprout-uncovered", "complete-sprout-uncovered", "delete-sprout-uncovered"];
+  for (const id of ids) {
+    assert.match(h.$(id).textContent, /Testnet NU7: .*4,465,026/, id);
+    assert.doesNotMatch(h.$(id).textContent, /mainnet|November/, id);
+  }
+  h.$("network-select").value = "mainnet";
+  await h.peek("refreshSproutNu7Warning()");
+  for (const id of ids) assert.match(h.$(id).textContent, /November 5, 2026/, id);
+});
+
+test("a network change keeps the post-broadcast wording, for the new network", async () => {
+  const h = harness(async (command, args, fallback) => {
+    if (command === "execute_sprout_sweep") return {
+      sent: [{ value_swept: 5, txid: "fixture-tx" }], total_swept: 5,
+      skipped: [], rejected: [], warnings: [], error: null,
+    };
+    return fallback();
+  });
+  await h.open("/fixture/sprout.dat");
+  await flush();
+  h.$("sprout-destination").value = "fixture-destination";
+  await h.sweep();
+  h.$("network-select").value = "testnet";
+  await h.peek("refreshSproutNu7Warning()");
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /^testnet NU7: .*confirm it is mined/);
+});
+
+test("a network change with no Sprout wallet open shows no warning", async () => {
+  const requested = [];
+  const h = harness(async (command, args, fallback) => {
+    if (command === "sprout_nu7_warning") requested.push(args);
+    const response = await fallback();
+    if (command === "inspect_wallet_file") {
+      return { ...response, sprout_keys: 0, sprout_spendable_notes: 0, sprout_nu7_warning: "" };
+    }
+    return response;
+  });
+  await h.open("/fixture/no-sprout.dat");
+  h.$("network-select").value = "testnet";
+  await h.peek("refreshSproutNu7Warning()");
+  assert.equal(requested.length, 0);
+  assert.equal(h.$("wallet-sprout-nu7-warning").hidden, true);
+  assert.equal(h.$("scan-sprout-uncovered").hidden, true);
+});
+
+test("a stale network refresh cannot overwrite a newer network's warning", async () => {
+  const slow = deferred();
+  const h = harness(async (command, args, fallback) => {
+    if (command === "sprout_nu7_warning" && args.network === "testnet") await slow.promise;
+    return fallback();
+  });
+  await h.open("/fixture/sprout.dat");
+  await flush();
+  h.$("network-select").value = "testnet";
+  const stale = h.peek("refreshSproutNu7Warning()");
+  h.$("network-select").value = "mainnet";
+  await h.peek("refreshSproutNu7Warning()");
+  slow.resolve();
+  await stale;
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /November 5, 2026/);
+});
+
+test("the network picker is wired to rebuild the NU7 warning", () => {
+  const source = fs.readFileSync("gui/src/main.js", "utf8");
+  const start = source.indexOf('$("network-select").addEventListener("change"');
+  assert.ok(start > 0);
+  const handler = source.slice(start, source.indexOf("\n});", start));
+  assert.match(handler, /refreshSproutNu7Warning\(\)/);
 });
 
 function deferred() {
@@ -356,7 +467,8 @@ test("current wallet sweep shows its transaction and clears the uncovered-key no
   assert.match(h.$("sprout-sweep-results").children[0].textContent, /fixture-tx/);
   assert.match(h.$("sprout-sweep-status").textContent, /Swept 90000/);
   assert.doesNotMatch(h.$("delete-sprout-uncovered").textContent, /does not include Sprout/);
-  assert.match(h.$("delete-sprout-uncovered").textContent, /mined before activation/);
+  // The deadline survives the sweep, reworded: broadcast is not mined.
+  assert.match(h.$("delete-sprout-uncovered").textContent, /must be mined before NU7 activation; confirm it is mined/);
   assert.equal(h.$("sprout-sweep-run").disabled, true);
   await h.open("/fixture/new.dat");
   assert.equal(h.$("sprout-sweep-results").children.length, 0);
@@ -658,4 +770,20 @@ test("the scan sweep keeps the caveat when a note was refused", async () => {
     assert.equal(h.peek("uncoveredSproutKeys") > 0, kept, `rejected=${rejected.length}`);
     if (kept) assert.match(h.$("sprout-scan-status").textContent, /1 note\(s\) refused/);
   }
+});
+
+test("a scan sweep that broadcast switches the NU7 warning to confirming it is mined", async () => {
+  const h = harness(async (command, args, fallback) =>
+    command === "sweep_sprout_from_scan"
+      ? { sent: [{ value_swept: 5, txid: "aa" }], total_swept: 5, skipped: [], rejected: [], error: null }
+      : fallback());
+  await h.open("/fixture/sprout.dat");
+  await flush();
+  h.$("sprout-scan-destination").value = "fixture-destination";
+  h.$("sprout-scan-confirm").checked = true;
+  await h.scanSweep();
+  await flush();
+  assert.match(h.$("wallet-sprout-nu7-warning").textContent, /confirm it is mined/);
+  assert.match(h.$("complete-sprout-uncovered").textContent, /confirm it is mined/);
+  assert.doesNotMatch(h.$("complete-sprout-uncovered").textContent, /Start recovery promptly/);
 });
